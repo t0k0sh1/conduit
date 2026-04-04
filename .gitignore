@@ -1,0 +1,28 @@
+# Rust (workspace root; Cargo workspace の成果物)
+/target/
+
+# 誤って npm / フロントビルドを置いた場合用（本プロジェクトは npm 未使用）
+node_modules/
+dist/
+dist-ssr/
+
+# 接続文字列・API キーなど（SQL クライアントで想定）
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
