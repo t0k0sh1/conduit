@@ -31,6 +31,66 @@ fn validate_ident(schema: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Double-quote a validated PostgreSQL identifier for use in SQL text.
+fn quote_ident(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+const TABLE_PREVIEW_DEFAULT_LIMIT: u32 = 100;
+const TABLE_PREVIEW_MAX_LIMIT: u32 = 1000;
+
+/// Read-only row preview for a base table (`SELECT * ... LIMIT`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TablePreview {
+    pub columns: Vec<String>,
+    pub rows: Vec<serde_json::Value>,
+}
+
+pub async fn fetch_table_preview(
+    params: PgConnectionParams,
+    schema: String,
+    table: String,
+    limit: Option<u32>,
+) -> Result<TablePreview, String> {
+    validate_ident(&schema)?;
+    validate_ident(&table)?;
+    let lim = limit.unwrap_or(TABLE_PREVIEW_DEFAULT_LIMIT).clamp(1, TABLE_PREVIEW_MAX_LIMIT);
+    let lim_i64 = i64::from(lim);
+
+    let client = connect(&params).await?;
+
+    let col_rows = client
+        .query(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_schema = $1 AND table_name = $2 \
+             ORDER BY ordinal_position",
+            &[&schema, &table],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let columns: Vec<String> = col_rows
+        .into_iter()
+        .map(|r| r.get::<_, String>(0))
+        .collect();
+
+    let fq = format!(
+        "SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json)::text \
+         FROM (SELECT * FROM {}.{} LIMIT $1) t",
+        quote_ident(&schema),
+        quote_ident(&table)
+    );
+    let data_row = client
+        .query_one(&fq, &[&lim_i64])
+        .await
+        .map_err(|e| e.to_string())?;
+    let json_text: String = data_row.get(0);
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(&json_text).map_err(|e| e.to_string())?;
+
+    Ok(TablePreview { columns, rows })
+}
+
 /// Opens a connection and runs `SELECT 1` to verify authentication and database access.
 pub async fn test_connection(params: PgConnectionParams) -> Result<(), String> {
     let client = connect(&params).await?;

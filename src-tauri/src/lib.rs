@@ -44,6 +44,16 @@ async fn pg_test_connection(params: PgConnectionParams) -> Result<(), String> {
     db_metadata::test_connection(params).await
 }
 
+#[tauri::command]
+async fn pg_fetch_table_preview(
+    params: PgConnectionParams,
+    schema: String,
+    table: String,
+    limit: Option<u32>,
+) -> Result<db_metadata::TablePreview, String> {
+    db_metadata::fetch_table_preview(params, schema, table, limit).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -56,6 +66,7 @@ pub fn run() {
             pg_list_relation_objects,
             pg_list_extensions,
             pg_test_connection,
+            pg_fetch_table_preview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

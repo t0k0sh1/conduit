@@ -7,6 +7,7 @@ import {
   fetchSystemSchemaNames,
   fetchExtensions,
   fetchRelationObjects,
+  fetchTablePreview,
   getCachedUserSchemas,
   getCachedSystemSchemas,
   getCachedExtensions,
@@ -21,6 +22,12 @@ const SIDEBAR_CLOSED = ["w-0", "opacity-0", "border-r-0", "pointer-events-none"]
 
 /** @type {string | null} */
 let selectedConnectionId = null;
+
+/** `connectionId::schema::table` when a table leaf is selected for preview. */
+/** @type {string | null} */
+let selectedTablePreviewKey = null;
+
+const TABLE_PREVIEW_DEFAULT_LIMIT = 100;
 
 /** Deferred re-render after selection change so double-click can complete on the same DOM. */
 let pendingSelectionRafId = 0;
@@ -204,6 +211,192 @@ function createLeafRow(label) {
   row.className = "rounded px-1 py-0.5 pl-6 font-mono text-xs text-stone-600";
   row.textContent = label;
   return row;
+}
+
+/**
+ * @param {string} connectionId
+ * @param {string} schemaName
+ * @param {string} tableName
+ */
+function tablePreviewKey(connectionId, schemaName, tableName) {
+  return `${connectionId}::${schemaName}::${tableName}`;
+}
+
+function renderTablePreviewPlaceholder() {
+  const body = document.getElementById("table-preview-body");
+  const heading = document.getElementById("table-preview-heading");
+  const meta = document.getElementById("table-preview-meta");
+  const tab = document.getElementById("table-preview-tab-label");
+  if (heading) heading.textContent = "";
+  if (meta) meta.textContent = "";
+  if (tab) tab.textContent = "Table preview";
+  if (body) {
+    body.className = "min-h-0 flex-1 overflow-auto p-3 text-sm text-stone-500 select-text";
+    body.replaceChildren();
+    body.appendChild(document.createTextNode("Select a table to preview rows."));
+  }
+}
+
+/**
+ * @param {string} schemaName
+ * @param {string} tableName
+ */
+function renderTablePreviewLoading(schemaName, tableName) {
+  const body = document.getElementById("table-preview-body");
+  const heading = document.getElementById("table-preview-heading");
+  const meta = document.getElementById("table-preview-meta");
+  const tab = document.getElementById("table-preview-tab-label");
+  const label = `${schemaName}.${tableName}`;
+  if (heading) heading.textContent = label;
+  if (meta) meta.textContent = "Loading…";
+  if (tab) tab.textContent = label;
+  if (body) {
+    body.className = "min-h-0 flex-1 overflow-auto p-3 text-sm text-stone-500 select-text";
+    body.replaceChildren();
+    body.appendChild(document.createTextNode("Loading…"));
+  }
+}
+
+/**
+ * @param {string} message
+ */
+function renderTablePreviewError(message) {
+  const body = document.getElementById("table-preview-body");
+  const meta = document.getElementById("table-preview-meta");
+  if (meta) meta.textContent = "";
+  if (body) {
+    body.className = "min-h-0 flex-1 overflow-auto p-3 text-sm select-text";
+    body.replaceChildren();
+    const p = document.createElement("p");
+    p.className = "text-red-600";
+    p.textContent = message;
+    body.appendChild(p);
+  }
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ type: "null" } | { type: "text"; text: string }}
+ */
+function formatTableCellPreview(value) {
+  if (value === null || value === undefined) {
+    return { type: "null" };
+  }
+  if (typeof value === "object") {
+    return { type: "text", text: JSON.stringify(value) };
+  }
+  return { type: "text", text: String(value) };
+}
+
+/**
+ * @param {{ columns: string[]; rows: unknown[] }} data
+ * @param {string} schemaName
+ * @param {string} tableName
+ */
+function renderTablePreviewTable(data) {
+  const body = document.getElementById("table-preview-body");
+  const meta = document.getElementById("table-preview-meta");
+  if (meta) {
+    meta.textContent = `${data.rows.length} rows (limit ${TABLE_PREVIEW_DEFAULT_LIMIT})`;
+  }
+  if (!body) return;
+
+  body.className = "min-h-0 flex-1 overflow-auto p-0 select-text";
+  body.replaceChildren();
+
+  const table = document.createElement("table");
+  table.className = "w-full border-collapse text-left text-xs text-stone-800";
+
+  const thead = document.createElement("thead");
+  const trh = document.createElement("tr");
+  for (const col of data.columns) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.className =
+      "sticky top-0 border-b border-stone-200/90 bg-[#fffcf7] px-2 py-2 font-medium text-stone-700";
+    th.textContent = col;
+    trh.appendChild(th);
+  }
+  thead.appendChild(trh);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const row of data.rows) {
+    const tr = document.createElement("tr");
+    tr.className = "border-b border-stone-100/90";
+    const rowObj =
+      typeof row === "object" && row !== null && !Array.isArray(row)
+        ? /** @type {Record<string, unknown>} */ (row)
+        : {};
+    for (const col of data.columns) {
+      const td = document.createElement("td");
+      td.className = "max-w-[24rem] whitespace-pre-wrap break-words px-2 py-1.5 align-top";
+      const cell = formatTableCellPreview(rowObj[col]);
+      if (cell.type === "null") {
+        const span = document.createElement("span");
+        span.className = "italic text-stone-400";
+        span.textContent = "NULL";
+        td.appendChild(span);
+      } else {
+        td.appendChild(document.createTextNode(cell.text));
+      }
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  body.appendChild(table);
+}
+
+/**
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @param {string} schemaName
+ * @param {string} tableName
+ */
+async function loadTablePreview(profile, schemaName, tableName) {
+  renderTablePreviewLoading(schemaName, tableName);
+  setStatusMessage("Loading…");
+  try {
+    const data = await fetchTablePreview(profile, schemaName, tableName, {
+      limit: TABLE_PREVIEW_DEFAULT_LIMIT,
+    });
+    renderTablePreviewTable(data);
+    setStatusMessage("Ready");
+  } catch (e) {
+    const msg = formatConnectionFailureMessage(e);
+    renderTablePreviewError(msg);
+    setStatusMessage(msg);
+  }
+}
+
+function resetTablePreviewPanel() {
+  selectedTablePreviewKey = null;
+  renderTablePreviewPlaceholder();
+}
+
+/**
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @param {string} schemaName
+ * @param {string} tableName
+ */
+function createTableLeafRow(profile, schemaName, tableName) {
+  const key = tablePreviewKey(profile.id, schemaName, tableName);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className =
+    "w-full rounded px-1 py-0.5 pl-6 text-left font-mono text-xs text-stone-600 hover:bg-stone-200/80";
+  if (selectedTablePreviewKey === key) {
+    btn.classList.add("bg-stone-200/80", "ring-1", "ring-stone-300/40");
+  }
+  btn.textContent = tableName;
+  btn.setAttribute("aria-label", `Preview table ${schemaName}.${tableName}`);
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    selectedTablePreviewKey = key;
+    renderConnections(lastConnections);
+    void loadTablePreview(profile, schemaName, tableName);
+  });
+  return btn;
 }
 
 /**
@@ -397,7 +590,11 @@ function appendSchemaSubtree(ul, profile, schemaName, isSystem) {
           } else {
             for (const n of objs) {
               const liN = document.createElement("li");
-              liN.appendChild(createLeafRow(n));
+              if (key === "tables") {
+                liN.appendChild(createTableLeafRow(profile, schemaName, n));
+              } else {
+                liN.appendChild(createLeafRow(n));
+              }
               ulN.appendChild(liN);
             }
           }
@@ -489,6 +686,8 @@ async function openConnection(id) {
   const profile = lastConnections.find((c) => c.id === id);
   if (!profile) return;
 
+  resetTablePreviewPanel();
+
   if (shouldPromptForSessionPassword(profile)) {
     const pw = await waitForSessionPassword(profile);
     if (pw === null) return;
@@ -527,6 +726,9 @@ function closeConnection(id) {
   pruneExpandedPathsForConnection(id);
   pruneCacheForConnection(id);
   clearSessionPassword(id);
+  if (selectedTablePreviewKey?.startsWith(`${id}::`)) {
+    resetTablePreviewPanel();
+  }
   renderConnections(lastConnections);
 }
 
@@ -605,6 +807,7 @@ function renderConnections(connections) {
       const changed = selectedConnectionId !== c.id;
       selectedConnectionId = c.id;
       if (!changed) return;
+      resetTablePreviewPanel();
       cancelAnimationFrame(pendingSelectionRafId);
       pendingSelectionRafId = requestAnimationFrame(() => {
         pendingSelectionRafId = 0;
@@ -723,6 +926,9 @@ async function removeConnectionAfterConfirm(id) {
     });
     if (selectedConnectionId === id) {
       selectedConnectionId = null;
+    }
+    if (selectedTablePreviewKey?.startsWith(`${id}::`)) {
+      resetTablePreviewPanel();
     }
     pruneExpandedPathsForConnection(id);
     pruneCacheForConnection(id);

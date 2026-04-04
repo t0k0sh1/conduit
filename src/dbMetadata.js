@@ -220,3 +220,23 @@ export async function fetchRelationObjects(profile, schema, kind) {
   setCached(k, rows);
   return /** @type {string[]} */ (rows);
 }
+
+/**
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @param {string} schema
+ * @param {string} table
+ * @param {{ limit?: number }} [options]
+ * @returns {Promise<{ columns: string[]; rows: unknown[] }>}
+ */
+export async function fetchTablePreview(profile, schema, table, options = {}) {
+  const invoke = getInvoke();
+  if (!invoke) {
+    throw new Error("Database metadata is only available in the desktop app.");
+  }
+  return await invoke("pg_fetch_table_preview", {
+    params: profileToParams(profile),
+    schema,
+    table,
+    limit: options.limit,
+  });
+}
