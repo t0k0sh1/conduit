@@ -1,18 +1,29 @@
-const { invoke } = window.__TAURI__.core;
+const SIDEBAR_OPEN = ["w-64", "opacity-100", "border-r"];
+const SIDEBAR_CLOSED = ["w-0", "opacity-0", "border-r-0", "pointer-events-none"];
 
-let greetInputEl;
-let greetMsgEl;
+function setSidebarOpen(open) {
+  const sidebar = document.getElementById("sidebar");
+  const toggle = document.getElementById("sidebar-toggle");
+  if (!sidebar || !toggle) return;
 
-async function greet() {
-  // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-  greetMsgEl.textContent = await invoke("greet", { name: greetInputEl.value });
+  if (open) {
+    SIDEBAR_CLOSED.forEach((c) => sidebar.classList.remove(c));
+    SIDEBAR_OPEN.forEach((c) => sidebar.classList.add(c));
+  } else {
+    SIDEBAR_OPEN.forEach((c) => sidebar.classList.remove(c));
+    SIDEBAR_CLOSED.forEach((c) => sidebar.classList.add(c));
+  }
+
+  toggle.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
 window.addEventListener("DOMContentLoaded", () => {
-  greetInputEl = document.querySelector("#greet-input");
-  greetMsgEl = document.querySelector("#greet-msg");
-  document.querySelector("#greet-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    greet();
+  const toggle = document.getElementById("sidebar-toggle");
+  if (!toggle) return;
+
+  let open = true;
+  toggle.addEventListener("click", () => {
+    open = !open;
+    setSidebarOpen(open);
   });
 });

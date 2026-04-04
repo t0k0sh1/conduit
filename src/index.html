@@ -2,38 +2,225 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="stylesheet" href="styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri App</title>
+    <title>Conduit</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <script type="module" src="/main.js" defer></script>
   </head>
 
-  <body>
-    <main class="container">
-      <h1>Welcome to Tauri</h1>
-
-      <div class="row">
-        <a href="https://tauri.app" target="_blank">
-          <img src="/assets/tauri.svg" class="logo tauri" alt="Tauri logo" />
-        </a>
-        <a
-          href="https://developer.mozilla.org/en-US/docs/Web/JavaScript"
-          target="_blank"
+  <body class="h-screen overflow-hidden bg-[#faf8f4] text-stone-800 antialiased">
+    <div class="flex h-full min-h-0 flex-col">
+      <!-- Top toolbar -->
+      <header
+        class="flex shrink-0 items-center gap-0.5 border-b border-stone-200/90 bg-[#f0ebe3] px-2 py-1.5"
+      >
+        <button
+          type="button"
+          id="sidebar-toggle"
+          class="rounded p-1.5 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900"
+          title="Sidebar"
+          aria-expanded="true"
+          aria-controls="sidebar"
         >
-          <img
-            src="/assets/javascript.svg"
-            class="logo vanilla"
-            alt="JavaScript logo"
-          />
-        </a>
-      </div>
-      <p>Click on the Tauri logo to learn more about the framework</p>
+          <span class="sr-only">Toggle sidebar</span>
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M4 6h16M4 12h16M4 18h7"
+            />
+          </svg>
+        </button>
+        <span class="mx-1 h-5 w-px shrink-0 bg-stone-300/90" aria-hidden="true"></span>
+        <button
+          type="button"
+          class="rounded p-1.5 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900"
+          title="New query"
+        >
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M12 4v16m8-8H4"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="rounded p-1.5 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900"
+          title="Connection"
+        >
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="rounded p-1.5 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900"
+          title="Tables"
+        >
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="rounded p-1.5 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900"
+          title="Run"
+        >
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"
+            />
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="rounded p-1.5 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900"
+          title="History"
+        >
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
+          </svg>
+        </button>
+        <span class="flex-1"></span>
+        <button
+          type="button"
+          class="rounded p-1.5 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900"
+          title="Settings"
+        >
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+            />
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+            />
+          </svg>
+        </button>
+      </header>
 
-      <form class="row" id="greet-form">
-        <input id="greet-input" placeholder="Enter a name..." />
-        <button type="submit">Greet</button>
-      </form>
-      <p id="greet-msg"></p>
-    </main>
+      <!-- Body: sidebar + main -->
+      <div class="flex min-h-0 flex-1">
+        <aside
+          id="sidebar"
+          class="flex w-64 shrink-0 flex-col overflow-hidden border-r border-stone-200/90 bg-[#f3efe6] transition-[width,opacity] duration-200 ease-out"
+        >
+          <div class="border-b border-stone-200/90 px-3 py-2 text-xs font-medium uppercase tracking-wide text-stone-500">
+            Objects
+          </div>
+          <nav class="min-h-0 flex-1 overflow-y-auto px-2 py-2 text-sm" aria-label="Connection tree">
+            <ul class="space-y-0.5">
+              <li>
+                <div class="flex items-center gap-1 rounded px-1 py-0.5 text-stone-800">
+                  <svg class="h-4 w-4 shrink-0 text-amber-700/90" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 7c0-1.1.9-2 2-2h12a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V7zm2 0v10h12V7H6z" />
+                  </svg>
+                  <span class="truncate">local_postgres</span>
+                </div>
+                <ul class="ml-3 mt-0.5 border-l border-stone-300/80 pl-2">
+                  <li>
+                    <div class="flex items-center gap-1 rounded px-1 py-0.5 text-stone-700">
+                      <svg class="h-4 w-4 shrink-0 text-stone-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                      </svg>
+                      <span class="truncate">public</span>
+                    </div>
+                    <ul class="ml-3 mt-0.5 border-l border-stone-300/80 pl-2">
+                      <li class="flex items-center gap-1 rounded px-1 py-0.5 text-stone-600 hover:bg-stone-200/70">
+                        <svg class="h-3.5 w-3.5 shrink-0 text-stone-500" fill="currentColor" viewBox="0 0 24 24">
+                          <path d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h10v2H4v-2z" />
+                        </svg>
+                        <span class="truncate">users</span>
+                      </li>
+                      <li class="flex items-center gap-1 rounded px-1 py-0.5 text-stone-600 hover:bg-stone-200/70">
+                        <svg class="h-3.5 w-3.5 shrink-0 text-stone-500" fill="currentColor" viewBox="0 0 24 24">
+                          <path d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h10v2H4v-2z" />
+                        </svg>
+                        <span class="truncate">orders</span>
+                      </li>
+                    </ul>
+                  </li>
+                  <li class="mt-0.5 flex items-center gap-1 rounded px-1 py-0.5 text-stone-600">
+                    <svg class="h-4 w-4 shrink-0 text-stone-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                    </svg>
+                    <span class="truncate">analytics</span>
+                  </li>
+                </ul>
+              </li>
+            </ul>
+          </nav>
+        </aside>
+
+        <main class="flex min-h-0 min-w-0 flex-1 flex-col bg-[#faf8f4]">
+          <div class="flex shrink-0 items-center gap-1 border-b border-stone-200/90 bg-[#f3efe6]/80 px-2">
+            <div
+              class="flex items-center gap-2 rounded-t border border-b-0 border-stone-200/90 bg-[#faf8f4] px-3 py-1.5 text-xs text-stone-800"
+            >
+              <span class="text-emerald-600">●</span>
+              <span>query_1.sql</span>
+            </div>
+            <div class="rounded-t px-3 py-1.5 text-xs text-stone-500">+</div>
+          </div>
+          <div class="min-h-0 flex-1 p-3">
+            <div
+              class="flex h-full min-h-[12rem] flex-col rounded-md border border-stone-200/90 bg-[#fffcf7]/90 font-mono text-sm shadow-sm shadow-stone-200/40"
+            >
+              <div class="border-b border-stone-200/80 px-3 py-2 text-xs text-stone-500">Editor</div>
+              <div class="flex-1 overflow-auto p-3 text-stone-600">
+                <span class="text-stone-400">-- </span>SELECT * FROM users LIMIT 10;
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+
+      <!-- Status bar -->
+      <footer
+        class="flex shrink-0 items-center justify-between gap-4 border-t border-stone-200/90 bg-[#f0ebe3] px-3 py-1.5 text-xs text-stone-600"
+        role="status"
+        aria-live="polite"
+      >
+        <span id="status-message" class="min-w-0 truncate">Ready</span>
+        <div class="flex shrink-0 items-center gap-2 text-stone-500">
+          <span id="status-detail" class="hidden sm:inline">Line 1, column 1</span>
+          <span class="text-stone-300" aria-hidden="true">|</span>
+          <span>UTF-8</span>
+        </div>
+      </footer>
+    </div>
   </body>
 </html>
