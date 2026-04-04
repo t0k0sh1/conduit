@@ -22,8 +22,17 @@ const SIDEBAR_CLOSED = ["w-0", "opacity-0", "border-r-0", "pointer-events-none"]
 /** @type {string | null} */
 let selectedConnectionId = null;
 
+/** Deferred re-render after selection change so double-click can complete on the same DOM. */
+let pendingSelectionRafId = 0;
+
 /** Connection profiles whose database node is expanded in the tree. */
 const openConnectionIds = new Set();
+
+/**
+ * Open connections whose object tree is hidden in the sidebar (not persisted).
+ * @type {Set<string>}
+ */
+const objectTreeCollapsedByConnectionId = new Set();
 
 /**
  * Expanded paths under a connection (lazy-loaded from PostgreSQL).
@@ -505,6 +514,7 @@ async function openConnection(id) {
  */
 function closeConnection(id) {
   openConnectionIds.delete(id);
+  objectTreeCollapsedByConnectionId.delete(id);
   pruneExpandedPathsForConnection(id);
   pruneCacheForConnection(id);
   clearSessionPassword(id);
@@ -542,11 +552,15 @@ function renderConnections(connections) {
   const list = document.getElementById("connections-list");
   if (!list) return;
 
+  cancelAnimationFrame(pendingSelectionRafId);
+  pendingSelectionRafId = 0;
+
   lastConnections = connections;
 
   for (const id of [...openConnectionIds]) {
     if (!connections.some((c) => c.id === id)) {
       openConnectionIds.delete(id);
+      objectTreeCollapsedByConnectionId.delete(id);
       pruneExpandedPathsForConnection(id);
       pruneCacheForConnection(id);
       clearSessionPassword(id);
@@ -574,17 +588,19 @@ function renderConnections(connections) {
     row.setAttribute("aria-selected", selectedConnectionId === c.id ? "true" : "false");
 
     const dbOpen = openConnectionIds.has(c.id);
-    row.setAttribute("aria-expanded", dbOpen ? "true" : "false");
+    const treeVisible = dbOpen && !objectTreeCollapsedByConnectionId.has(c.id);
+    row.setAttribute("aria-expanded", treeVisible ? "true" : "false");
 
     row.addEventListener("click", (e) => {
       e.stopPropagation();
+      const changed = selectedConnectionId !== c.id;
       selectedConnectionId = c.id;
-      renderConnections(connections);
-    });
-
-    row.addEventListener("dblclick", (e) => {
-      e.stopPropagation();
-      void openConnection(c.id);
+      if (!changed) return;
+      cancelAnimationFrame(pendingSelectionRafId);
+      pendingSelectionRafId = requestAnimationFrame(() => {
+        pendingSelectionRafId = 0;
+        renderConnections(connections);
+      });
     });
 
     const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -599,15 +615,33 @@ function renderConnections(connections) {
     );
     icon.appendChild(path);
 
+    const nameArea = document.createElement("div");
+    nameArea.className = "flex min-h-0 min-w-0 flex-1 items-center";
     const label = document.createElement("span");
-    label.className = "truncate";
+    label.className = "min-w-0 flex-1 truncate";
     label.textContent = c.label || c.id;
+    nameArea.appendChild(label);
+    nameArea.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      cancelAnimationFrame(pendingSelectionRafId);
+      pendingSelectionRafId = 0;
+      if (!dbOpen) {
+        void openConnection(c.id);
+        return;
+      }
+      if (objectTreeCollapsedByConnectionId.has(c.id)) {
+        objectTreeCollapsedByConnectionId.delete(c.id);
+      } else {
+        objectTreeCollapsedByConnectionId.add(c.id);
+      }
+      renderConnections(connections);
+    });
 
     row.appendChild(icon);
-    row.appendChild(label);
+    row.appendChild(nameArea);
     li.appendChild(row);
 
-    if (dbOpen) {
+    if (treeVisible) {
       const nested = document.createElement("ul");
       nested.className = "mt-0.5 ml-2 border-l border-stone-200/80 pl-2";
       nested.setAttribute("aria-label", "Database objects");
