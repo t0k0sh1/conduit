@@ -1,3 +1,5 @@
+# glib (RUSTSEC-2024-0429 / GHSA-wrw7-89jp-8q8g): Tauri 2.x が Linux 向けに gtk 0.18（→ glib ^0.18）を要求するため、
+# 現時点では glib 0.20 未満を解消できない。修正は tauri の gtk/glib 更新リリース後に cargo update で再確認する。
 [workspace]
 members = ["src-tauri"]
 resolver = "2"
