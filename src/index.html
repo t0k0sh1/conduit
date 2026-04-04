@@ -137,7 +137,8 @@
       <div class="flex min-h-0 flex-1">
         <aside
           id="sidebar"
-          class="flex w-64 shrink-0 select-none flex-col overflow-hidden border-r border-stone-200/90 bg-[#f3efe6] transition-[width,opacity] duration-200 ease-out"
+          style="width: 256px"
+          class="flex shrink-0 select-none flex-col overflow-hidden border-r border-stone-200/90 bg-[#f3efe6] transition-[width,opacity] duration-200 ease-out"
         >
           <div
             class="flex shrink-0 items-center justify-between gap-2 border-b border-stone-200/90 px-2 py-2"
@@ -204,6 +205,16 @@
             <ul id="connections-list" class="space-y-0.5"></ul>
           </nav>
         </aside>
+
+        <div
+          id="sidebar-resize-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          title="Resize sidebar"
+          tabindex="0"
+          class="w-1 shrink-0 cursor-col-resize touch-none bg-stone-200/40 hover:bg-stone-300/80"
+        ></div>
 
         <main class="flex min-h-0 min-w-0 flex-1 flex-col bg-[#faf8f4]">
           <div

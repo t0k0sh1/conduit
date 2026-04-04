@@ -18,8 +18,27 @@ import {
   shouldPromptForSessionPassword,
 } from "./dbMetadata.js";
 
-const SIDEBAR_OPEN = ["w-64", "opacity-100", "border-r"];
+const SIDEBAR_DEFAULT_WIDTH_PX = 256;
+const SIDEBAR_MIN_WIDTH_PX = 160;
+const SIDEBAR_MAX_WIDTH_PX = 560;
+
+const SIDEBAR_OPEN = ["opacity-100", "border-r"];
 const SIDEBAR_CLOSED = ["w-0", "opacity-0", "border-r-0", "pointer-events-none"];
+
+/** @type {number} */
+let sidebarWidthPx = SIDEBAR_DEFAULT_WIDTH_PX;
+
+/**
+ * @param {number} px
+ * @returns {number}
+ */
+function clampSidebarWidth(px) {
+  const max = Math.max(
+    SIDEBAR_MIN_WIDTH_PX,
+    Math.min(SIDEBAR_MAX_WIDTH_PX, Math.floor(window.innerWidth * 0.8)),
+  );
+  return Math.max(SIDEBAR_MIN_WIDTH_PX, Math.min(max, Math.round(px)));
+}
 
 /** @type {string | null} */
 let selectedConnectionId = null;
@@ -810,17 +829,82 @@ function closeConnection(id) {
 function setSidebarOpen(open) {
   const sidebar = document.getElementById("sidebar");
   const toggle = document.getElementById("sidebar-toggle");
+  const handle = document.getElementById("sidebar-resize-handle");
   if (!sidebar || !toggle) return;
 
   if (open) {
     SIDEBAR_CLOSED.forEach((c) => sidebar.classList.remove(c));
     SIDEBAR_OPEN.forEach((c) => sidebar.classList.add(c));
+    sidebar.style.width = `${sidebarWidthPx}px`;
+    handle?.classList.remove("hidden");
   } else {
     SIDEBAR_OPEN.forEach((c) => sidebar.classList.remove(c));
     SIDEBAR_CLOSED.forEach((c) => sidebar.classList.add(c));
+    sidebar.style.width = "";
+    handle?.classList.add("hidden");
   }
 
   toggle.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function initSidebarResize() {
+  const handle = document.getElementById("sidebar-resize-handle");
+  const sidebar = document.getElementById("sidebar");
+  if (!handle || !sidebar) return;
+
+  /** @type {number | null} */
+  let activePointerId = null;
+  let startX = 0;
+  let startWidth = 0;
+
+  const endDrag = () => {
+    activePointerId = null;
+    document.body.classList.remove("select-none");
+    sidebar.classList.remove("transition-none");
+  };
+
+  const finishResizeAndPersist = (e) => {
+    if (activePointerId !== e.pointerId) return;
+    try {
+      handle.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    endDrag();
+    void updateAppConfig((c) => {
+      c.ui.sidebarWidthPx = sidebarWidthPx;
+    });
+  };
+
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    if (sidebar.classList.contains("w-0")) return;
+    e.preventDefault();
+    activePointerId = e.pointerId;
+    startX = e.clientX;
+    startWidth = sidebar.offsetWidth;
+    document.body.classList.add("select-none");
+    try {
+      handle.setPointerCapture(e.pointerId);
+    } catch {
+      endDrag();
+      return;
+    }
+    /* Avoid animating width during drag (transition-[width] feels like cursor lag). */
+    sidebar.classList.add("transition-none");
+  });
+
+  handle.addEventListener("pointermove", (e) => {
+    if (activePointerId !== e.pointerId) return;
+    const delta = e.clientX - startX;
+    const next = clampSidebarWidth(startWidth + delta);
+    sidebarWidthPx = next;
+    sidebar.style.width = `${next}px`;
+  });
+
+  handle.addEventListener("pointerup", finishResizeAndPersist);
+
+  handle.addEventListener("pointercancel", finishResizeAndPersist);
 }
 
 function syncConnectionActionButtons() {
@@ -1025,7 +1109,11 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   const config = await getAppConfig();
 
+  sidebarWidthPx = clampSidebarWidth(
+    typeof config.ui.sidebarWidthPx === "number" ? config.ui.sidebarWidthPx : SIDEBAR_DEFAULT_WIDTH_PX,
+  );
   setSidebarOpen(config.ui.sidebarOpen);
+  initSidebarResize();
   renderConnections(config.connections);
 
   const wizard = initConnectionWizard({

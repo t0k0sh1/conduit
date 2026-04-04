@@ -4,7 +4,7 @@
  * - オブジェクトの形は Rust の AppConfig と揃え、プロパティは camelCase（serde と一致）
  */
 
-/** @typedef {{ sidebarOpen: boolean }} UiSettings */
+/** @typedef {{ sidebarOpen: boolean, sidebarWidthPx: number }} UiSettings */
 /** @typedef {{ id: string, label: string, host: string, port: number, database: string, user: string, password: string, savePasswordInProfile: boolean }} ConnectionProfile */
 /** @typedef {{ ui: UiSettings, connections: ConnectionProfile[] }} AppConfig */
 
@@ -19,7 +19,7 @@ function getInvoke() {
 
 export function defaultAppConfig() {
   return {
-    ui: { sidebarOpen: true },
+    ui: { sidebarOpen: true, sidebarWidthPx: 256 },
     connections: [],
   };
 }

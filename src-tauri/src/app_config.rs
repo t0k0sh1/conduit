@@ -28,16 +28,26 @@ impl Default for AppConfig {
     }
 }
 
+fn default_sidebar_width_px() -> u32 {
+    256
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UiSettings {
     /// Whether the sidebar is expanded.
     pub sidebar_open: bool,
+    /// Sidebar width in CSS pixels when expanded.
+    #[serde(default = "default_sidebar_width_px")]
+    pub sidebar_width_px: u32,
 }
 
 impl Default for UiSettings {
     fn default() -> Self {
-        Self { sidebar_open: true }
+        Self {
+            sidebar_open: true,
+            sidebar_width_px: default_sidebar_width_px(),
+        }
     }
 }
 
