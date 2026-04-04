@@ -43,9 +43,31 @@ function clampSidebarWidth(px) {
 /** @type {string | null} */
 let selectedConnectionId = null;
 
-/** `connectionId::schema::table` when a table leaf is selected for preview. */
+/** `connectionId::schema::table` when a table leaf is selected for preview (active tab). */
 /** @type {string | null} */
 let selectedTablePreviewKey = null;
+
+/**
+ * @typedef {{
+ *   id: string;
+ *   connectionId: string;
+ *   schemaName: string;
+ *   tableName: string;
+ *   previewKey: string;
+ *   panelEl: HTMLElement;
+ *   headingEl: HTMLElement;
+ *   metaEl: HTMLElement;
+ *   bodyEl: HTMLElement;
+ * }} TablePreviewTab
+ */
+
+/** @type {TablePreviewTab[]} */
+let tablePreviewTabs = [];
+
+/** @type {string | null} */
+let activeTablePreviewTabId = null;
+
+let nextTablePreviewTabSeq = 1;
 
 const TABLE_PREVIEW_DEFAULT_LIMIT = 100;
 
@@ -316,59 +338,267 @@ function tablePreviewKey(connectionId, schemaName, tableName) {
   return `${connectionId}::${schemaName}::${tableName}`;
 }
 
-function renderTablePreviewPlaceholder() {
-  const area = document.getElementById("table-preview-area");
-  if (area) area.classList.add("hidden");
-  const body = document.getElementById("table-preview-body");
-  const heading = document.getElementById("table-preview-heading");
-  const meta = document.getElementById("table-preview-meta");
-  const tab = document.getElementById("table-preview-tab-label");
-  if (heading) heading.textContent = "";
-  if (meta) meta.textContent = "";
-  if (tab) tab.textContent = "Table preview";
-  if (body) {
-    body.className = "min-h-0 flex-1 overflow-auto p-3 text-sm text-stone-500 select-text";
-    body.replaceChildren();
-    body.appendChild(document.createTextNode("Select a table to preview rows."));
+/**
+ * @param {string} tabId
+ */
+function createTabPanelElements(tabId) {
+  const panelEl = document.createElement("div");
+  panelEl.id = `table-preview-panel-${tabId}`;
+  panelEl.setAttribute("role", "tabpanel");
+  panelEl.setAttribute("aria-labelledby", `table-preview-tab-${tabId}`);
+  panelEl.className =
+    "flex h-full min-h-[12rem] flex-1 select-none flex-col rounded-md border border-stone-200/90 bg-[#fffcf7]/90 font-mono text-sm shadow-sm shadow-stone-200/40";
+
+  const header = document.createElement("div");
+  header.className =
+    "flex shrink-0 flex-wrap items-baseline justify-between gap-x-2 gap-y-1 border-b border-stone-200/80 px-3 py-2 text-xs";
+
+  const headingEl = document.createElement("span");
+  headingEl.className = "min-w-0 font-medium text-stone-800";
+
+  const metaEl = document.createElement("span");
+  metaEl.className = "shrink-0 text-stone-500";
+
+  header.appendChild(headingEl);
+  header.appendChild(metaEl);
+
+  const bodyEl = document.createElement("div");
+  bodyEl.className =
+    "min-h-0 flex-1 overflow-auto p-3 text-sm text-stone-500 select-text";
+
+  panelEl.appendChild(header);
+  panelEl.appendChild(bodyEl);
+
+  return { panelEl, headingEl, metaEl, bodyEl };
+}
+
+function syncTabPanelVisibility() {
+  for (const t of tablePreviewTabs) {
+    t.panelEl.classList.toggle("hidden", t.id !== activeTablePreviewTabId);
+  }
+}
+
+function renderTabStrip() {
+  const tabsStrip = document.getElementById("table-preview-tabs");
+  if (!tabsStrip) return;
+  tabsStrip.replaceChildren();
+
+  for (const tab of tablePreviewTabs) {
+    const isActive = tab.id === activeTablePreviewTabId;
+    const wrap = document.createElement("div");
+    wrap.className = isActive
+      ? "flex min-w-0 max-w-[14rem] shrink-0 items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#faf8f4] px-1 pl-2.5 py-1 text-xs text-stone-800 ring-1 ring-stone-300/40"
+      : "flex min-w-0 max-w-[14rem] shrink-0 items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#f0ebe3]/90 px-1 pl-2.5 py-1 text-xs text-stone-700";
+
+    const dot = document.createElement("span");
+    dot.className = "shrink-0 text-emerald-600";
+    dot.setAttribute("aria-hidden", "true");
+    dot.textContent = "●";
+
+    const tabBtn = document.createElement("button");
+    tabBtn.type = "button";
+    tabBtn.setAttribute("role", "tab");
+    tabBtn.id = `table-preview-tab-${tab.id}`;
+    tabBtn.className = "min-w-0 flex-1 truncate text-left";
+    tabBtn.setAttribute("aria-controls", `table-preview-panel-${tab.id}`);
+    tabBtn.setAttribute("aria-selected", isActive ? "true" : "false");
+    const label = `${tab.schemaName}.${tab.tableName}`;
+    tabBtn.textContent = label;
+    tabBtn.setAttribute("aria-label", `Preview ${label}`);
+    tabBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (activeTablePreviewTabId !== tab.id) {
+        activateTablePreviewTab(tab.id);
+      }
+    });
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className =
+      "shrink-0 rounded px-1 text-stone-500 hover:bg-stone-200/80 hover:text-stone-800";
+    closeBtn.setAttribute("aria-label", "Close tab");
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeTablePreviewTab(tab.id);
+    });
+
+    wrap.appendChild(dot);
+    wrap.appendChild(tabBtn);
+    wrap.appendChild(closeBtn);
+    tabsStrip.appendChild(wrap);
   }
 }
 
 /**
+ * @param {string} tabId
+ */
+function activateTablePreviewTab(tabId) {
+  if (!tablePreviewTabs.some((t) => t.id === tabId)) return;
+  activeTablePreviewTabId = tabId;
+  const tab = tablePreviewTabs.find((t) => t.id === tabId);
+  if (tab) selectedTablePreviewKey = tab.previewKey;
+  syncTabPanelVisibility();
+  renderTabStrip();
+  renderConnections(lastConnections);
+}
+
+/**
+ * @param {string} tabId
+ */
+function closeTablePreviewTab(tabId) {
+  const idx = tablePreviewTabs.findIndex((t) => t.id === tabId);
+  if (idx === -1) return;
+
+  const wasActive = activeTablePreviewTabId === tabId;
+  const tab = tablePreviewTabs[idx];
+  tab.panelEl.remove();
+
+  tablePreviewTabs.splice(idx, 1);
+
+  if (tablePreviewTabs.length === 0) {
+    activeTablePreviewTabId = null;
+    selectedTablePreviewKey = null;
+    renderTablePreviewPlaceholder();
+    renderConnections(lastConnections);
+    return;
+  }
+
+  if (wasActive) {
+    const nextIdx = idx < tablePreviewTabs.length ? idx : idx - 1;
+    const nextTab = tablePreviewTabs[nextIdx];
+    if (nextTab) {
+      activeTablePreviewTabId = nextTab.id;
+      selectedTablePreviewKey = nextTab.previewKey;
+    }
+  }
+
+  syncTabPanelVisibility();
+  renderTabStrip();
+  renderConnections(lastConnections);
+}
+
+/**
+ * @param {string} connectionId
+ */
+function removeTabsForConnection(connectionId) {
+  const toRemove = tablePreviewTabs.filter((t) => t.connectionId === connectionId);
+  if (toRemove.length === 0) return;
+
+  for (const t of toRemove) {
+    t.panelEl.remove();
+  }
+  tablePreviewTabs = tablePreviewTabs.filter((t) => t.connectionId !== connectionId);
+
+  if (tablePreviewTabs.length === 0) {
+    activeTablePreviewTabId = null;
+    selectedTablePreviewKey = null;
+    const tabsStrip = document.getElementById("table-preview-tabs");
+    if (tabsStrip) tabsStrip.replaceChildren();
+    const area = document.getElementById("table-preview-area");
+    if (area) area.classList.add("hidden");
+    return;
+  }
+
+  if (!activeTablePreviewTabId || !tablePreviewTabs.some((t) => t.id === activeTablePreviewTabId)) {
+    const last = tablePreviewTabs[tablePreviewTabs.length - 1];
+    activeTablePreviewTabId = last.id;
+    selectedTablePreviewKey = last.previewKey;
+  } else {
+    const t = tablePreviewTabs.find((x) => x.id === activeTablePreviewTabId);
+    selectedTablePreviewKey = t?.previewKey ?? null;
+  }
+
+  const area = document.getElementById("table-preview-area");
+  if (area) area.classList.remove("hidden");
+  syncTabPanelVisibility();
+  renderTabStrip();
+}
+
+/**
+ * @param {import("./appConfig.js").ConnectionProfile} profile
  * @param {string} schemaName
  * @param {string} tableName
  */
-function renderTablePreviewLoading(schemaName, tableName) {
+function openNewTableTab(profile, schemaName, tableName) {
+  const key = tablePreviewKey(profile.id, schemaName, tableName);
+  const tabId = `tab-${nextTablePreviewTabSeq++}`;
+  const { panelEl, headingEl, metaEl, bodyEl } = createTabPanelElements(tabId);
+
+  const panelsRoot = document.getElementById("table-preview-panels");
+  if (!panelsRoot) return;
+  panelsRoot.appendChild(panelEl);
+
+  /** @type {TablePreviewTab} */
+  const tab = {
+    id: tabId,
+    connectionId: profile.id,
+    schemaName,
+    tableName,
+    previewKey: key,
+    panelEl,
+    headingEl,
+    metaEl,
+    bodyEl,
+  };
+  tablePreviewTabs.push(tab);
+  activeTablePreviewTabId = tabId;
+  selectedTablePreviewKey = key;
+
   const area = document.getElementById("table-preview-area");
   if (area) area.classList.remove("hidden");
-  const body = document.getElementById("table-preview-body");
-  const heading = document.getElementById("table-preview-heading");
-  const meta = document.getElementById("table-preview-meta");
-  const tab = document.getElementById("table-preview-tab-label");
+
+  syncTabPanelVisibility();
+  renderTabStrip();
+  renderConnections(lastConnections);
+
+  void loadTablePreview(tabId, profile, schemaName, tableName);
+}
+
+function renderTablePreviewPlaceholder() {
+  const area = document.getElementById("table-preview-area");
+  if (area) area.classList.add("hidden");
+  const tabsStrip = document.getElementById("table-preview-tabs");
+  const panelsRoot = document.getElementById("table-preview-panels");
+  if (tabsStrip) tabsStrip.replaceChildren();
+  if (panelsRoot) panelsRoot.replaceChildren();
+  tablePreviewTabs = [];
+  activeTablePreviewTabId = null;
+  selectedTablePreviewKey = null;
+}
+
+/**
+ * @param {HTMLElement} headingEl
+ * @param {HTMLElement} metaEl
+ * @param {HTMLElement} bodyEl
+ * @param {string} schemaName
+ * @param {string} tableName
+ */
+function renderTablePreviewLoading(headingEl, metaEl, bodyEl, schemaName, tableName) {
   const label = `${schemaName}.${tableName}`;
-  if (heading) heading.textContent = label;
-  if (meta) meta.textContent = "Loading…";
-  if (tab) tab.textContent = label;
-  if (body) {
-    body.className = "min-h-0 flex-1 overflow-auto p-3 text-sm text-stone-500 select-text";
-    body.replaceChildren();
-    body.appendChild(document.createTextNode("Loading…"));
+  if (headingEl) headingEl.textContent = label;
+  if (metaEl) metaEl.textContent = "Loading…";
+  if (bodyEl) {
+    bodyEl.className = "min-h-0 flex-1 overflow-auto p-3 text-sm text-stone-500 select-text";
+    bodyEl.replaceChildren();
+    bodyEl.appendChild(document.createTextNode("Loading…"));
   }
 }
 
 /**
+ * @param {HTMLElement} bodyEl
+ * @param {HTMLElement} metaEl
  * @param {string} message
  */
-function renderTablePreviewError(message) {
-  const body = document.getElementById("table-preview-body");
-  const meta = document.getElementById("table-preview-meta");
-  if (meta) meta.textContent = "";
-  if (body) {
-    body.className = "min-h-0 flex-1 overflow-auto p-3 text-sm select-text";
-    body.replaceChildren();
+function renderTablePreviewError(bodyEl, metaEl, message) {
+  if (metaEl) metaEl.textContent = "";
+  if (bodyEl) {
+    bodyEl.className = "min-h-0 flex-1 overflow-auto p-3 text-sm select-text";
+    bodyEl.replaceChildren();
     const p = document.createElement("p");
     p.className = "text-red-600";
     p.textContent = message;
-    body.appendChild(p);
+    bodyEl.appendChild(p);
   }
 }
 
@@ -387,20 +617,18 @@ function formatTableCellPreview(value) {
 }
 
 /**
+ * @param {HTMLElement} bodyEl
+ * @param {HTMLElement} metaEl
  * @param {{ columns: string[]; rows: unknown[] }} data
- * @param {string} schemaName
- * @param {string} tableName
  */
-function renderTablePreviewTable(data) {
-  const body = document.getElementById("table-preview-body");
-  const meta = document.getElementById("table-preview-meta");
-  if (meta) {
-    meta.textContent = `${data.rows.length} rows (limit ${TABLE_PREVIEW_DEFAULT_LIMIT})`;
+function renderTablePreviewTable(bodyEl, metaEl, data) {
+  if (metaEl) {
+    metaEl.textContent = `${data.rows.length} rows (limit ${TABLE_PREVIEW_DEFAULT_LIMIT})`;
   }
-  if (!body) return;
+  if (!bodyEl) return;
 
-  body.className = "min-h-0 flex-1 overflow-auto p-0 select-text";
-  body.replaceChildren();
+  bodyEl.className = "min-h-0 flex-1 overflow-auto p-0 select-text";
+  bodyEl.replaceChildren();
 
   const table = document.createElement("table");
   table.className =
@@ -444,32 +672,38 @@ function renderTablePreviewTable(data) {
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
-  body.appendChild(table);
+  bodyEl.appendChild(table);
 }
 
 /**
+ * @param {string} tabId
  * @param {import("./appConfig.js").ConnectionProfile} profile
  * @param {string} schemaName
  * @param {string} tableName
  */
-async function loadTablePreview(profile, schemaName, tableName) {
-  renderTablePreviewLoading(schemaName, tableName);
+async function loadTablePreview(tabId, profile, schemaName, tableName) {
+  const tab = tablePreviewTabs.find((t) => t.id === tabId);
+  if (!tab) return;
+  renderTablePreviewLoading(tab.headingEl, tab.metaEl, tab.bodyEl, schemaName, tableName);
   setStatusMessage("Loading…");
   try {
     const data = await fetchTablePreview(profile, schemaName, tableName, {
       limit: TABLE_PREVIEW_DEFAULT_LIMIT,
     });
-    renderTablePreviewTable(data);
+    const still = tablePreviewTabs.find((t) => t.id === tabId);
+    if (!still) return;
+    renderTablePreviewTable(still.bodyEl, still.metaEl, data);
     setStatusMessage("Ready");
   } catch (e) {
+    const still = tablePreviewTabs.find((t) => t.id === tabId);
+    if (!still) return;
     const msg = formatConnectionFailureMessage(e);
-    renderTablePreviewError(msg);
+    renderTablePreviewError(still.bodyEl, still.metaEl, msg);
     setStatusMessage(msg);
   }
 }
 
 function resetTablePreviewPanel() {
-  selectedTablePreviewKey = null;
   renderTablePreviewPlaceholder();
 }
 
@@ -491,9 +725,7 @@ function createTableLeafRow(profile, schemaName, tableName) {
   btn.setAttribute("aria-label", `Preview table ${schemaName}.${tableName}`);
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
-    selectedTablePreviewKey = key;
-    renderConnections(lastConnections);
-    void loadTablePreview(profile, schemaName, tableName);
+    openNewTableTab(profile, schemaName, tableName);
   });
   return btn;
 }
@@ -821,9 +1053,7 @@ function closeConnection(id) {
   pruneExpandedPathsForConnection(id);
   pruneCacheForConnection(id);
   clearSessionPassword(id);
-  if (selectedTablePreviewKey?.startsWith(`${id}::`)) {
-    resetTablePreviewPanel();
-  }
+  removeTabsForConnection(id);
   renderConnections(lastConnections);
 }
 
@@ -1087,9 +1317,7 @@ async function removeConnectionAfterConfirm(id) {
     if (selectedConnectionId === id) {
       selectedConnectionId = null;
     }
-    if (selectedTablePreviewKey?.startsWith(`${id}::`)) {
-      resetTablePreviewPanel();
-    }
+    removeTabsForConnection(id);
     pruneExpandedPathsForConnection(id);
     pruneCacheForConnection(id);
     clearSessionPassword(id);
