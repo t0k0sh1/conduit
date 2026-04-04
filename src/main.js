@@ -8,6 +8,35 @@ const SIDEBAR_CLOSED = ["w-0", "opacity-0", "border-r-0", "pointer-events-none"]
 /** @type {string | null} */
 let selectedConnectionId = null;
 
+/** Connection profiles whose database node is expanded in the tree (no real DB connection yet). */
+const openConnectionIds = new Set();
+
+/** @type {import("./appConfig.js").ConnectionProfile[]} */
+let lastConnections = [];
+
+/**
+ * @param {string} id
+ */
+function isConnectionOpen(id) {
+  return openConnectionIds.has(id);
+}
+
+/**
+ * @param {string} id
+ */
+function openConnection(id) {
+  openConnectionIds.add(id);
+  renderConnections(lastConnections);
+}
+
+/**
+ * @param {string} id
+ */
+function closeConnection(id) {
+  openConnectionIds.delete(id);
+  renderConnections(lastConnections);
+}
+
 function setSidebarOpen(open) {
   const sidebar = document.getElementById("sidebar");
   const toggle = document.getElementById("sidebar-toggle");
@@ -39,6 +68,14 @@ function renderConnections(connections) {
   const list = document.getElementById("connections-list");
   if (!list) return;
 
+  lastConnections = connections;
+
+  for (const id of [...openConnectionIds]) {
+    if (!connections.some((c) => c.id === id)) {
+      openConnectionIds.delete(id);
+    }
+  }
+
   if (selectedConnectionId && !connections.some((c) => c.id === selectedConnectionId)) {
     selectedConnectionId = null;
   }
@@ -59,10 +96,18 @@ function renderConnections(connections) {
     row.title = `${c.host}:${c.port}/${c.database}`;
     row.setAttribute("aria-selected", selectedConnectionId === c.id ? "true" : "false");
 
+    const dbOpen = openConnectionIds.has(c.id);
+    row.setAttribute("aria-expanded", dbOpen ? "true" : "false");
+
     row.addEventListener("click", (e) => {
       e.stopPropagation();
       selectedConnectionId = c.id;
       renderConnections(connections);
+    });
+
+    row.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      openConnection(c.id);
     });
 
     const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -84,6 +129,18 @@ function renderConnections(connections) {
     row.appendChild(icon);
     row.appendChild(label);
     li.appendChild(row);
+
+    if (dbOpen) {
+      const nested = document.createElement("ul");
+      nested.className = "mt-0.5 ml-2 border-l border-stone-200/80 pl-2";
+      nested.setAttribute("aria-label", "Database objects");
+      const schemaLi = document.createElement("li");
+      schemaLi.className = "rounded px-1 py-0.5 text-stone-700";
+      schemaLi.textContent = "Schemas";
+      nested.appendChild(schemaLi);
+      li.appendChild(nested);
+    }
+
     list.appendChild(li);
   }
 
@@ -175,6 +232,9 @@ window.addEventListener("DOMContentLoaded", async () => {
       renderConnections(next.connections);
     },
     onDeleteConnection: removeConnectionAfterConfirm,
+    isConnectionOpen,
+    onOpenConnection: openConnection,
+    onCloseConnection: closeConnection,
   });
 
   const editBtn = document.getElementById("edit-connection-btn");

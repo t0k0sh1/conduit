@@ -4,9 +4,18 @@ import { getAppConfig, updateAppConfig } from "./appConfig.js";
  * @param {{
  *   onConfigUpdated: (config: import("./appConfig.js").AppConfig) => void;
  *   onDeleteConnection?: (id: string) => void | Promise<void>;
+ *   isConnectionOpen?: (id: string) => boolean;
+ *   onOpenConnection?: (id: string) => void;
+ *   onCloseConnection?: (id: string) => void;
  * }} options
  */
-export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
+export function initConnectionWizard({
+  onConfigUpdated,
+  onDeleteConnection,
+  isConnectionOpen = () => false,
+  onOpenConnection = () => {},
+  onCloseConnection = () => {},
+}) {
   const dialog = /** @type {HTMLDialogElement | null} */ (document.getElementById("connection-wizard-dialog"));
   const form = document.getElementById("connection-wizard-form");
   const addBtn = document.getElementById("add-connection-btn");
@@ -26,6 +35,12 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
   const contextDelete = /** @type {HTMLButtonElement | null} */ (
     document.getElementById("context-delete-connection")
   );
+  const contextOpen = /** @type {HTMLButtonElement | null} */ (
+    document.getElementById("context-open-connection")
+  );
+  const contextClose = /** @type {HTMLButtonElement | null} */ (
+    document.getElementById("context-close-connection")
+  );
   const treeNav = document.getElementById("connection-tree-nav");
 
   if (
@@ -40,6 +55,8 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
     !errorEl ||
     !menu ||
     !contextAdd ||
+    !contextOpen ||
+    !contextClose ||
     !contextEdit ||
     !contextDelete
   ) {
@@ -200,6 +217,10 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
       t instanceof Element ? t.closest("[data-connection-id]") : null;
     contextMenuConnectionId = row?.dataset.connectionId ?? null;
     const hasRow = contextMenuConnectionId != null;
+    const id = contextMenuConnectionId;
+    const open = id != null && isConnectionOpen(id);
+    contextOpen.disabled = !hasRow || open;
+    contextClose.disabled = !hasRow || !open;
     contextEdit.disabled = !hasRow;
     contextDelete.disabled = !hasRow;
     menu.classList.remove("hidden");
@@ -217,6 +238,22 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
   contextAdd.addEventListener("click", () => {
     hideContextMenu();
     openWizard();
+  });
+
+  contextOpen.addEventListener("click", () => {
+    hideContextMenu();
+    const id = contextMenuConnectionId;
+    if (id && !isConnectionOpen(id)) {
+      onOpenConnection(id);
+    }
+  });
+
+  contextClose.addEventListener("click", () => {
+    hideContextMenu();
+    const id = contextMenuConnectionId;
+    if (id && isConnectionOpen(id)) {
+      onCloseConnection(id);
+    }
   });
 
   contextEdit.addEventListener("click", () => {
