@@ -378,28 +378,127 @@ function syncTabPanelVisibility() {
   }
 }
 
+/**
+ * Pointer-driven tab reorder (HTML5 DnD is unreliable in WKWebView when dragging from tab children).
+ * @type {{
+ *   tabId: string;
+ *   startX: number;
+ *   startY: number;
+ *   dragging: boolean;
+ *   sourceWrap: HTMLElement;
+ *   grabOffsetX: number;
+ *   grabOffsetY: number;
+ *   ghostEl: HTMLElement | null;
+ *   hoverTargetId: string | null;
+ * } | null}
+ */
+let pointerTabDrag = null;
+
+/** After a tab drag, suppress the synthetic click that would otherwise activate the tab. */
+let skipTablePreviewTabClickAfterDrag = false;
+
+/**
+ * Removes floating ghost, placeholder styling, drop highlight, and cursor override.
+ */
+function cleanupTablePreviewTabDragVisuals() {
+  if (pointerTabDrag?.ghostEl?.parentNode) {
+    pointerTabDrag.ghostEl.remove();
+  }
+  if (pointerTabDrag?.sourceWrap) {
+    pointerTabDrag.sourceWrap.classList.remove("opacity-25", "opacity-60");
+  }
+  const tabsStrip = document.getElementById("table-preview-tabs");
+  if (tabsStrip) {
+    for (const el of tabsStrip.querySelectorAll("[data-tab-id]")) {
+      el.classList.remove(
+        "ring-2",
+        "ring-amber-400/70",
+        "ring-offset-1",
+        "ring-offset-[#f3efe6]",
+      );
+    }
+  }
+  document.body.style.cursor = "";
+  if (pointerTabDrag) {
+    pointerTabDrag.ghostEl = null;
+    pointerTabDrag.hoverTargetId = null;
+  }
+}
+
+/**
+ * Find which tab row is under the pointer. Skips the drag ghost (WebKit can still
+ * return it from elementFromPoint even with pointer-events: none).
+ * @param {number} clientX
+ * @param {number} clientY
+ * @param {HTMLElement | null} ghostEl
+ * @param {string} sourceTabId
+ * @returns {string | null}
+ */
+function pickTablePreviewTabDropTarget(clientX, clientY, ghostEl, sourceTabId) {
+  const stack = document.elementsFromPoint(clientX, clientY);
+  if (!stack?.length) return null;
+  for (const node of stack) {
+    if (!(node instanceof Element)) continue;
+    if (ghostEl && (node === ghostEl || ghostEl.contains(node))) continue;
+    const tab = node.closest("[data-tab-id]");
+    if (!tab?.dataset?.tabId) continue;
+    const id = tab.dataset.tabId;
+    if (id !== sourceTabId) return id;
+  }
+  return null;
+}
+
+function syncTablePreviewPanelsOrder() {
+  const panelsRoot = document.getElementById("table-preview-panels");
+  if (!panelsRoot) return;
+  for (const t of tablePreviewTabs) {
+    panelsRoot.appendChild(t.panelEl);
+  }
+}
+
+/**
+ * @param {string} fromId
+ * @param {string} toId
+ */
+function swapTablePreviewTabsById(fromId, toId) {
+  if (fromId === toId) return;
+  const i = tablePreviewTabs.findIndex((t) => t.id === fromId);
+  const j = tablePreviewTabs.findIndex((t) => t.id === toId);
+  if (i === -1 || j === -1) return;
+  const tmp = tablePreviewTabs[i];
+  tablePreviewTabs[i] = tablePreviewTabs[j];
+  tablePreviewTabs[j] = tmp;
+  syncTablePreviewPanelsOrder();
+  syncTabPanelVisibility();
+  renderTabStrip();
+}
+
 function renderTabStrip() {
   const tabsStrip = document.getElementById("table-preview-tabs");
   if (!tabsStrip) return;
   tabsStrip.replaceChildren();
 
+  const TAB_DRAG_THRESHOLD_PX = 5;
+
   for (const tab of tablePreviewTabs) {
     const isActive = tab.id === activeTablePreviewTabId;
     const wrap = document.createElement("div");
+    wrap.dataset.tabId = tab.id;
     wrap.className = isActive
-      ? "flex min-w-0 max-w-[14rem] shrink-0 items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#faf8f4] px-1 pl-2.5 py-1 text-xs text-stone-800 ring-1 ring-stone-300/40"
-      : "flex min-w-0 max-w-[14rem] shrink-0 items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#f0ebe3]/90 px-1 pl-2.5 py-1 text-xs text-stone-700";
+      ? "flex min-w-0 max-w-[14rem] shrink-0 touch-none cursor-grab select-none items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#faf8f4] px-1 pl-1.5 py-1 text-xs text-stone-800 ring-1 ring-stone-300/40 active:cursor-grabbing"
+      : "flex min-w-0 max-w-[14rem] shrink-0 touch-none cursor-grab select-none items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#f0ebe3]/90 px-1 pl-1.5 py-1 text-xs text-stone-700 active:cursor-grabbing";
 
     const dot = document.createElement("span");
     dot.className = "shrink-0 text-emerald-600";
     dot.setAttribute("aria-hidden", "true");
     dot.textContent = "●";
 
-    const tabBtn = document.createElement("button");
-    tabBtn.type = "button";
+    const tabBtn = document.createElement("div");
     tabBtn.setAttribute("role", "tab");
     tabBtn.id = `table-preview-tab-${tab.id}`;
-    tabBtn.className = "min-w-0 flex-1 truncate text-left";
+    tabBtn.tabIndex = isActive ? 0 : -1;
+    tabBtn.className =
+      "min-w-0 flex-1 cursor-grab truncate text-left outline-none hover:text-stone-900 active:cursor-grabbing";
     tabBtn.setAttribute("aria-controls", `table-preview-panel-${tab.id}`);
     tabBtn.setAttribute("aria-selected", isActive ? "true" : "false");
     const label = `${tab.schemaName}.${tab.tableName}`;
@@ -407,6 +506,14 @@ function renderTabStrip() {
     tabBtn.setAttribute("aria-label", `Preview ${label}`);
     tabBtn.addEventListener("click", (e) => {
       e.stopPropagation();
+      if (skipTablePreviewTabClickAfterDrag) return;
+      if (activeTablePreviewTabId !== tab.id) {
+        activateTablePreviewTab(tab.id);
+      }
+    });
+    tabBtn.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
       if (activeTablePreviewTabId !== tab.id) {
         activateTablePreviewTab(tab.id);
       }
@@ -415,12 +522,140 @@ function renderTabStrip() {
     const closeBtn = document.createElement("button");
     closeBtn.type = "button";
     closeBtn.className =
-      "shrink-0 rounded px-1 text-stone-500 hover:bg-stone-200/80 hover:text-stone-800";
+      "shrink-0 cursor-pointer rounded px-1 text-stone-500 hover:bg-stone-200/80 hover:text-stone-800";
     closeBtn.setAttribute("aria-label", "Close tab");
     closeBtn.textContent = "×";
     closeBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       closeTablePreviewTab(tab.id);
+    });
+    closeBtn.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+    });
+
+    wrap.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      if (closeBtn.contains(/** @type {Node} */ (e.target))) return;
+      pointerTabDrag = {
+        tabId: tab.id,
+        startX: e.clientX,
+        startY: e.clientY,
+        dragging: false,
+        sourceWrap: wrap,
+        grabOffsetX: 0,
+        grabOffsetY: 0,
+        ghostEl: null,
+        hoverTargetId: null,
+      };
+      try {
+        wrap.setPointerCapture(e.pointerId);
+      } catch (_) {
+        /* ignore */
+      }
+    });
+    wrap.addEventListener("pointermove", (e) => {
+      if (!pointerTabDrag || pointerTabDrag.tabId !== tab.id) return;
+      const dx = e.clientX - pointerTabDrag.startX;
+      const dy = e.clientY - pointerTabDrag.startY;
+      if (!pointerTabDrag.dragging && dx * dx + dy * dy > TAB_DRAG_THRESHOLD_PX * TAB_DRAG_THRESHOLD_PX) {
+        pointerTabDrag.dragging = true;
+        const rect = wrap.getBoundingClientRect();
+        pointerTabDrag.grabOffsetX = e.clientX - rect.left;
+        pointerTabDrag.grabOffsetY = e.clientY - rect.top;
+        document.body.style.cursor = "grabbing";
+
+        const ghost = /** @type {HTMLElement} */ (wrap.cloneNode(true));
+        ghost.removeAttribute("data-tab-id");
+        for (const el of ghost.querySelectorAll("[id]")) {
+          el.removeAttribute("id");
+        }
+        ghost.style.position = "fixed";
+        ghost.style.left = `${rect.left}px`;
+        ghost.style.top = `${rect.top}px`;
+        ghost.style.width = `${rect.width}px`;
+        ghost.style.zIndex = "10000";
+        ghost.style.pointerEvents = "none";
+        ghost.style.boxShadow = "0 10px 28px rgba(0, 0, 0, 0.14)";
+        document.body.appendChild(ghost);
+        pointerTabDrag.ghostEl = ghost;
+
+        wrap.classList.add("opacity-25");
+      }
+
+      if (pointerTabDrag.dragging && pointerTabDrag.ghostEl) {
+        pointerTabDrag.ghostEl.style.left = `${e.clientX - pointerTabDrag.grabOffsetX}px`;
+        pointerTabDrag.ghostEl.style.top = `${e.clientY - pointerTabDrag.grabOffsetY}px`;
+
+        const nextHover = pickTablePreviewTabDropTarget(
+          e.clientX,
+          e.clientY,
+          pointerTabDrag.ghostEl,
+          pointerTabDrag.tabId,
+        );
+        if (nextHover !== pointerTabDrag.hoverTargetId) {
+          const strip = document.getElementById("table-preview-tabs");
+          if (strip) {
+            for (const node of strip.querySelectorAll("[data-tab-id]")) {
+              node.classList.remove(
+                "ring-2",
+                "ring-amber-400/70",
+                "ring-offset-1",
+                "ring-offset-[#f3efe6]",
+              );
+            }
+            if (nextHover) {
+              const mark = strip.querySelector(`[data-tab-id="${CSS.escape(nextHover)}"]`);
+              if (mark) {
+                mark.classList.add(
+                  "ring-2",
+                  "ring-amber-400/70",
+                  "ring-offset-1",
+                  "ring-offset-[#f3efe6]",
+                );
+              }
+            }
+          }
+          pointerTabDrag.hoverTargetId = nextHover;
+        }
+      }
+    });
+    wrap.addEventListener("pointerup", (e) => {
+      if (!pointerTabDrag || pointerTabDrag.tabId !== tab.id) return;
+      const wasDrag = pointerTabDrag.dragging;
+      const ghost = pointerTabDrag.ghostEl;
+      const hoverFallback = pointerTabDrag.hoverTargetId;
+      /** @type {string | null} */
+      let dropTargetId = null;
+      if (wasDrag) {
+        dropTargetId =
+          pickTablePreviewTabDropTarget(e.clientX, e.clientY, ghost, tab.id) ?? hoverFallback;
+      }
+      cleanupTablePreviewTabDragVisuals();
+      pointerTabDrag = null;
+      try {
+        wrap.releasePointerCapture(e.pointerId);
+      } catch (_) {
+        /* ignore */
+      }
+      if (wasDrag) {
+        skipTablePreviewTabClickAfterDrag = true;
+        window.setTimeout(() => {
+          skipTablePreviewTabClickAfterDrag = false;
+        }, 0);
+        if (dropTargetId && dropTargetId !== tab.id) {
+          swapTablePreviewTabsById(tab.id, dropTargetId);
+        }
+      }
+    });
+    wrap.addEventListener("pointercancel", (e) => {
+      if (!pointerTabDrag || pointerTabDrag.tabId !== tab.id) return;
+      cleanupTablePreviewTabDragVisuals();
+      pointerTabDrag = null;
+      try {
+        wrap.releasePointerCapture(e.pointerId);
+      } catch (_) {
+        /* ignore */
+      }
     });
 
     wrap.appendChild(dot);
