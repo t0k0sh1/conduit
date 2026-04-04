@@ -87,14 +87,36 @@ export async function testPgConnection(params) {
   await invoke("pg_test_connection", { params });
 }
 
-function getCached(key) {
+/**
+ * Fresh snapshot only (within TTL). Used by fetch* to skip network when still valid.
+ * Expired entries stay in the map for display (stale-while-revalidate).
+ * @param {string} key
+ */
+function getFreshCached(key) {
   const e = cache.get(key);
   if (!e) return undefined;
-  if (Date.now() - e.at > CACHE_TTL_MS) {
-    cache.delete(key);
-    return undefined;
-  }
+  if (Date.now() - e.at > CACHE_TTL_MS) return undefined;
   return e.payload;
+}
+
+/**
+ * Last fetched payload for UI if present, including past TTL (tree keeps showing until refresh completes).
+ * @param {string} key
+ */
+function getCachedPayloadAnyAge(key) {
+  const e = cache.get(key);
+  return e ? e.payload : undefined;
+}
+
+/**
+ * Whether an entry exists and is past TTL (needs background refresh).
+ * @param {...string} parts
+ */
+export function isPgCacheStale(...parts) {
+  const key = cacheKey(...parts);
+  const e = cache.get(key);
+  if (!e) return false;
+  return Date.now() - e.at > CACHE_TTL_MS;
 }
 
 function setCached(key, payload) {
@@ -116,7 +138,9 @@ export function pruneCacheForConnection(connectionId) {
  * @returns {string[] | undefined}
  */
 export function getCachedUserSchemas(connectionId) {
-  return /** @type {string[] | undefined} */ (getCached(cacheKey("pg", connectionId, "user-schemas")));
+  return /** @type {string[] | undefined} */ (
+    getCachedPayloadAnyAge(cacheKey("pg", connectionId, "user-schemas"))
+  );
 }
 
 /**
@@ -124,7 +148,9 @@ export function getCachedUserSchemas(connectionId) {
  * @returns {string[] | undefined}
  */
 export function getCachedSystemSchemas(connectionId) {
-  return /** @type {string[] | undefined} */ (getCached(cacheKey("pg", connectionId, "system-schemas")));
+  return /** @type {string[] | undefined} */ (
+    getCachedPayloadAnyAge(cacheKey("pg", connectionId, "system-schemas"))
+  );
 }
 
 /**
@@ -132,7 +158,9 @@ export function getCachedSystemSchemas(connectionId) {
  * @returns {string[] | undefined}
  */
 export function getCachedExtensions(connectionId) {
-  return /** @type {string[] | undefined} */ (getCached(cacheKey("pg", connectionId, "extensions")));
+  return /** @type {string[] | undefined} */ (
+    getCachedPayloadAnyAge(cacheKey("pg", connectionId, "extensions"))
+  );
 }
 
 /**
@@ -143,7 +171,7 @@ export function getCachedExtensions(connectionId) {
  */
 export function getCachedRelations(connectionId, schema, kind) {
   return /** @type {string[] | undefined} */ (
-    getCached(cacheKey("pg", connectionId, "rel", schema, kind))
+    getCachedPayloadAnyAge(cacheKey("pg", connectionId, "rel", schema, kind))
   );
 }
 
@@ -157,7 +185,7 @@ export async function fetchUserSchemas(profile) {
     throw new Error("Database metadata is only available in the desktop app.");
   }
   const k = cacheKey("pg", profile.id, "user-schemas");
-  const hit = getCached(k);
+  const hit = getFreshCached(k);
   if (hit !== undefined) return /** @type {string[]} */ (hit);
   const rows = await invoke("pg_list_user_schemas", { params: profileToParams(profile) });
   setCached(k, rows);
@@ -174,7 +202,7 @@ export async function fetchSystemSchemaNames(profile) {
     throw new Error("Database metadata is only available in the desktop app.");
   }
   const k = cacheKey("pg", profile.id, "system-schemas");
-  const hit = getCached(k);
+  const hit = getFreshCached(k);
   if (hit !== undefined) return /** @type {string[]} */ (hit);
   const rows = await invoke("pg_list_system_schema_names", { params: profileToParams(profile) });
   setCached(k, rows);
@@ -191,7 +219,7 @@ export async function fetchExtensions(profile) {
     throw new Error("Database metadata is only available in the desktop app.");
   }
   const k = cacheKey("pg", profile.id, "extensions");
-  const hit = getCached(k);
+  const hit = getFreshCached(k);
   if (hit !== undefined) return /** @type {string[]} */ (hit);
   const rows = await invoke("pg_list_extensions", { params: profileToParams(profile) });
   setCached(k, rows);
@@ -210,7 +238,7 @@ export async function fetchRelationObjects(profile, schema, kind) {
     throw new Error("Database metadata is only available in the desktop app.");
   }
   const k = cacheKey("pg", profile.id, "rel", schema, kind);
-  const hit = getCached(k);
+  const hit = getFreshCached(k);
   if (hit !== undefined) return /** @type {string[]} */ (hit);
   const rows = await invoke("pg_list_relation_objects", {
     params: profileToParams(profile),

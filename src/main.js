@@ -12,6 +12,7 @@ import {
   getCachedSystemSchemas,
   getCachedExtensions,
   getCachedRelations,
+  isPgCacheStale,
   setSessionPassword,
   clearSessionPassword,
   shouldPromptForSessionPassword,
@@ -50,6 +51,9 @@ const expandedTreePaths = new Set();
 /** Paths currently awaiting metadata (show loading row). @type {Set<string>} */
 const loadingPaths = new Set();
 
+/** Background revalidation in flight (no loading row; avoids full-tree flicker). @type {Set<string>} */
+const silentStaleRefreshInFlight = new Set();
+
 /** @type {Map<string, string>} */
 const errorsByPath = new Map();
 
@@ -85,6 +89,9 @@ function pruneExpandedPathsForConnection(connectionId) {
   }
   for (const k of [...loadingPaths]) {
     if (k.startsWith(head)) loadingPaths.delete(k);
+  }
+  for (const k of [...silentStaleRefreshInFlight]) {
+    if (k.startsWith(head)) silentStaleRefreshInFlight.delete(k);
   }
 }
 
@@ -156,6 +163,74 @@ async function toggleTreePath(path, profile) {
     return;
   }
   renderConnections(lastConnections);
+}
+
+/**
+ * @param {string} path
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ */
+function isExpandedPathStale(path, profile) {
+  const id = profile.id;
+  const parts = path.split("::");
+  if (parts[0] !== id) return false;
+  if (path === `${id}::schemas`) return isPgCacheStale("pg", id, "user-schemas");
+  if (path === `${id}::system`) return isPgCacheStale("pg", id, "system-schemas");
+  if (path === `${id}::extensions`) return isPgCacheStale("pg", id, "extensions");
+  if (parts.length === 4 && parts[1] === "schema") {
+    return isPgCacheStale("pg", id, "rel", parts[2], parts[3]);
+  }
+  if (parts.length === 4 && parts[1] === "system") {
+    return isPgCacheStale("pg", id, "rel", parts[2], parts[3]);
+  }
+  return false;
+}
+
+/**
+ * Re-fetch in the background when cache is stale; keeps showing last snapshot until done (no loading row).
+ * @param {string} path
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ */
+function scheduleSilentStaleRefreshIfNeeded(path, profile) {
+  if (silentStaleRefreshInFlight.has(path)) return;
+  if (loadingPaths.has(path)) return;
+  if (errorsByPath.has(path)) return;
+  if (!expandedTreePaths.has(path)) return;
+  if (!isExpandedPathStale(path, profile)) return;
+  silentStaleRefreshInFlight.add(path);
+  void (async () => {
+    try {
+      errorsByPath.delete(path);
+      await ensureLoaded(path, profile);
+    } catch (e) {
+      errorsByPath.set(path, formatConnectionFailureMessage(e));
+    } finally {
+      silentStaleRefreshInFlight.delete(path);
+      renderConnections(lastConnections);
+    }
+  })();
+}
+
+/**
+ * First load when the node is expanded but no cache entry exists (rare). Shows loading row like {@link toggleTreePath}.
+ * @param {string} path
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ */
+function ensureExpandedPathMissingData(path, profile) {
+  if (loadingPaths.has(path)) return;
+  if (errorsByPath.has(path)) return;
+  loadingPaths.add(path);
+  renderConnections(lastConnections);
+  void (async () => {
+    try {
+      errorsByPath.delete(path);
+      await ensureLoaded(path, profile);
+    } catch (e) {
+      errorsByPath.set(path, formatConnectionFailureMessage(e));
+    } finally {
+      loadingPaths.delete(path);
+      renderConnections(lastConnections);
+    }
+  })();
 }
 
 /**
@@ -430,19 +505,18 @@ function renderDbTreeInto(parentUl, profile) {
     } else {
       const names = getCachedUserSchemas(id);
       if (names === undefined) {
-        const li = document.createElement("li");
-        li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
-        li.textContent = "Expand to load.";
-        ul.appendChild(li);
+        ensureExpandedPathMissingData(schemasPath, profile);
       } else if (names.length === 0) {
         const li = document.createElement("li");
         li.className = "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
         li.textContent = "(no items)";
         ul.appendChild(li);
+        scheduleSilentStaleRefreshIfNeeded(schemasPath, profile);
       } else {
         for (const schemaName of names) {
           appendSchemaSubtree(ul, profile, schemaName, false);
         }
+        scheduleSilentStaleRefreshIfNeeded(schemasPath, profile);
       }
     }
     liSchemas.appendChild(ul);
@@ -472,19 +546,18 @@ function renderDbTreeInto(parentUl, profile) {
     } else {
       const names = getCachedSystemSchemas(id);
       if (names === undefined) {
-        const li = document.createElement("li");
-        li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
-        li.textContent = "Expand to load.";
-        ul.appendChild(li);
+        ensureExpandedPathMissingData(systemPath, profile);
       } else if (names.length === 0) {
         const li = document.createElement("li");
         li.className = "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
         li.textContent = "(no items)";
         ul.appendChild(li);
+        scheduleSilentStaleRefreshIfNeeded(systemPath, profile);
       } else {
         for (const schemaName of names) {
           appendSchemaSubtree(ul, profile, schemaName, true);
         }
+        scheduleSilentStaleRefreshIfNeeded(systemPath, profile);
       }
     }
     liSys.appendChild(ul);
@@ -514,21 +587,20 @@ function renderDbTreeInto(parentUl, profile) {
     } else {
       const names = getCachedExtensions(id);
       if (names === undefined) {
-        const li = document.createElement("li");
-        li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
-        li.textContent = "Expand to load.";
-        ul.appendChild(li);
+        ensureExpandedPathMissingData(extPath, profile);
       } else if (names.length === 0) {
         const li = document.createElement("li");
         li.className = "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
         li.textContent = "(no items)";
         ul.appendChild(li);
+        scheduleSilentStaleRefreshIfNeeded(extPath, profile);
       } else {
         for (const name of names) {
           const li = document.createElement("li");
           li.appendChild(createLeafRow(name));
           ul.appendChild(li);
         }
+        scheduleSilentStaleRefreshIfNeeded(extPath, profile);
       }
     }
     liExt.appendChild(ul);
@@ -578,15 +650,13 @@ function appendSchemaSubtree(ul, profile, schemaName, isSystem) {
         } else {
           const objs = getCachedRelations(id, schemaName, key);
           if (objs === undefined) {
-            const liL = document.createElement("li");
-            liL.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
-            liL.textContent = "Expand to load.";
-            ulN.appendChild(liL);
+            ensureExpandedPathMissingData(p, profile);
           } else if (objs.length === 0) {
             const liL = document.createElement("li");
             liL.className = "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
             liL.textContent = "(no items)";
             ulN.appendChild(liL);
+            scheduleSilentStaleRefreshIfNeeded(p, profile);
           } else {
             for (const n of objs) {
               const liN = document.createElement("li");
@@ -597,6 +667,7 @@ function appendSchemaSubtree(ul, profile, schemaName, isSystem) {
               }
               ulN.appendChild(liN);
             }
+            scheduleSilentStaleRefreshIfNeeded(p, profile);
           }
         }
         liG.appendChild(ulN);
