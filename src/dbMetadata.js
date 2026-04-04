@@ -39,6 +39,14 @@ export function clearSessionPassword(connectionId) {
 }
 
 /**
+ * @param {string} connectionId
+ * @returns {string | undefined}
+ */
+export function getSessionPassword(connectionId) {
+  return sessionPasswordByConnectionId.get(connectionId);
+}
+
+/**
  * @param {import("./appConfig.js").ConnectionProfile} profile
  */
 export function shouldPromptForSessionPassword(profile) {
@@ -59,6 +67,24 @@ export function profileToParams(profile) {
     user: profile.user,
     password,
   };
+}
+
+/**
+ * @param {{
+ *   host: string;
+ *   port: number;
+ *   database: string;
+ *   user: string;
+ *   password: string;
+ * }} params
+ * @returns {Promise<void>}
+ */
+export async function testPgConnection(params) {
+  const invoke = getInvoke();
+  if (!invoke) {
+    throw new Error("Database metadata is only available in the desktop app.");
+  }
+  await invoke("pg_test_connection", { params });
 }
 
 function getCached(key) {

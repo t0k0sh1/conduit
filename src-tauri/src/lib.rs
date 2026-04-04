@@ -39,6 +39,11 @@ async fn pg_list_extensions(params: PgConnectionParams) -> Result<Vec<String>, S
     db_metadata::list_extensions(params).await
 }
 
+#[tauri::command]
+async fn pg_test_connection(params: PgConnectionParams) -> Result<(), String> {
+    db_metadata::test_connection(params).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -50,6 +55,7 @@ pub fn run() {
             pg_list_system_schema_names,
             pg_list_relation_objects,
             pg_list_extensions,
+            pg_test_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

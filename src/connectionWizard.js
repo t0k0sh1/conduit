@@ -1,4 +1,5 @@
 import { getAppConfig, updateAppConfig } from "./appConfig.js";
+import { getSessionPassword, testPgConnection } from "./dbMetadata.js";
 
 /**
  * @param {{
@@ -27,6 +28,11 @@ export function initConnectionWizard({
   );
   const passwordInput = /** @type {HTMLInputElement | null} */ (document.getElementById("wizard-password"));
   const errorEl = document.getElementById("wizard-error");
+  const successEl = document.getElementById("wizard-success");
+  const testBtn = /** @type {HTMLButtonElement | null} */ (
+    document.getElementById("wizard-test-connection")
+  );
+  const testLabel = document.getElementById("wizard-test-connection-label");
   const menu = document.getElementById("connection-tree-context-menu");
   const contextAdd = document.getElementById("context-add-connection");
   const contextEdit = /** @type {HTMLButtonElement | null} */ (
@@ -53,6 +59,9 @@ export function initConnectionWizard({
     !savePasswordCheckbox ||
     !passwordInput ||
     !errorEl ||
+    !successEl ||
+    !testBtn ||
+    !testLabel ||
     !menu ||
     !contextAdd ||
     !contextOpen ||
@@ -79,22 +88,25 @@ export function initConnectionWizard({
     }
   }
 
-  function syncPasswordField() {
-    const save = savePasswordCheckbox.checked;
-    passwordInput.disabled = !save;
-    if (!save) passwordInput.value = "";
-  }
-
-  savePasswordCheckbox.addEventListener("change", syncPasswordField);
-
   function showError(msg) {
+    successEl.textContent = "";
+    successEl.classList.add("hidden");
     errorEl.textContent = msg;
     errorEl.classList.remove("hidden");
+  }
+
+  function showSuccess(msg) {
+    errorEl.textContent = "";
+    errorEl.classList.add("hidden");
+    successEl.textContent = msg;
+    successEl.classList.remove("hidden");
   }
 
   function clearError() {
     errorEl.textContent = "";
     errorEl.classList.add("hidden");
+    successEl.textContent = "";
+    successEl.classList.add("hidden");
   }
 
   function openWizard() {
@@ -106,7 +118,6 @@ export function initConnectionWizard({
     if (portInput instanceof HTMLInputElement) {
       portInput.value = "5432";
     }
-    syncPasswordField();
     clearError();
     dialog.showModal();
   }
@@ -127,7 +138,6 @@ export function initConnectionWizard({
     if (userInput instanceof HTMLInputElement) userInput.value = profile.user;
     savePasswordCheckbox.checked = profile.savePasswordInProfile;
     passwordInput.value = profile.savePasswordInProfile ? profile.password : "";
-    syncPasswordField();
   }
 
   async function openEditWizard(id) {
@@ -152,6 +162,60 @@ export function initConnectionWizard({
 
   addBtn.addEventListener("click", openWizard);
   cancelBtn.addEventListener("click", closeWizard);
+
+  async function runConnectionTest() {
+    clearError();
+
+    const fd = new FormData(form);
+    const label = String(fd.get("label") ?? "").trim();
+    const host = String(fd.get("host") ?? "").trim();
+    const database = String(fd.get("database") ?? "").trim();
+    const user = String(fd.get("user") ?? "").trim();
+    const portRaw = String(fd.get("port") ?? "").trim();
+    const savePassword = savePasswordCheckbox.checked;
+    const passwordFromForm = String(fd.get("password") ?? "");
+
+    if (!label || !host || !database || !user) {
+      showError("Display name, host, database, and user are required.");
+      return;
+    }
+
+    const port = parseInt(portRaw, 10);
+    if (!Number.isFinite(port) || port < 1 || port > 65535) {
+      showError("Port must be a number between 1 and 65535.");
+      return;
+    }
+
+    let passwordForTest = passwordFromForm;
+    if (!savePassword && passwordForTest === "" && editingConnectionId) {
+      passwordForTest = getSessionPassword(editingConnectionId) ?? "";
+    }
+
+    testBtn.disabled = true;
+    testBtn.setAttribute("aria-busy", "true");
+    testLabel.textContent = "Testing...";
+
+    try {
+      await testPgConnection({
+        host,
+        port,
+        database,
+        user,
+        password: passwordForTest,
+      });
+      showSuccess("Connection succeeded.");
+    } catch (err) {
+      showError(err instanceof Error ? err.message : "Connection test failed.");
+    } finally {
+      testBtn.disabled = false;
+      testBtn.removeAttribute("aria-busy");
+      testLabel.textContent = "Test connection";
+    }
+  }
+
+  testBtn.addEventListener("click", () => {
+    void runConnectionTest();
+  });
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();

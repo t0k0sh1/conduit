@@ -31,6 +31,16 @@ fn validate_ident(schema: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Opens a connection and runs `SELECT 1` to verify authentication and database access.
+pub async fn test_connection(params: PgConnectionParams) -> Result<(), String> {
+    let client = connect(&params).await?;
+    client
+        .query_one("SELECT 1", &[])
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 async fn connect(params: &PgConnectionParams) -> Result<tokio_postgres::Client, String> {
     let mut cfg = tokio_postgres::Config::new();
     cfg.host(&params.host);
