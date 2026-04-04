@@ -298,6 +298,8 @@ function tablePreviewKey(connectionId, schemaName, tableName) {
 }
 
 function renderTablePreviewPlaceholder() {
+  const area = document.getElementById("table-preview-area");
+  if (area) area.classList.add("hidden");
   const body = document.getElementById("table-preview-body");
   const heading = document.getElementById("table-preview-heading");
   const meta = document.getElementById("table-preview-meta");
@@ -317,6 +319,8 @@ function renderTablePreviewPlaceholder() {
  * @param {string} tableName
  */
 function renderTablePreviewLoading(schemaName, tableName) {
+  const area = document.getElementById("table-preview-area");
+  if (area) area.classList.remove("hidden");
   const body = document.getElementById("table-preview-body");
   const heading = document.getElementById("table-preview-heading");
   const meta = document.getElementById("table-preview-meta");
