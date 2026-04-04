@@ -1,10 +1,6 @@
 services:
   postgres-a:
-    build:
-      context: ./docker/postgres
-      args:
-        INIT_DIR: init-a
-    image: conduit-postgres-local:a
+    image: postgres:16-alpine
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -13,13 +9,11 @@ services:
       - "15432:5432"
     tmpfs:
       - /var/lib/postgresql/data:size=256m
+    volumes:
+      - ./docker/postgres/init-a:/docker-entrypoint-initdb.d:ro
 
   postgres-b:
-    build:
-      context: ./docker/postgres
-      args:
-        INIT_DIR: init-b
-    image: conduit-postgres-local:b
+    image: postgres:16-alpine
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -28,3 +22,5 @@ services:
       - "25432:5432"
     tmpfs:
       - /var/lib/postgresql/data:size=256m
+    volumes:
+      - ./docker/postgres/init-b:/docker-entrypoint-initdb.d:ro
