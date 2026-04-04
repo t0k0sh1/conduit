@@ -752,6 +752,68 @@ function removeTabsForConnection(connectionId) {
 }
 
 /**
+ * After removing tabs in bulk, keep `keepId` active if the previous active tab was closed.
+ * @param {string} keepId
+ */
+function finalizeActiveAfterBulkClose(keepId) {
+  if (tablePreviewTabs.length === 0) {
+    activeTablePreviewTabId = null;
+    selectedTablePreviewKey = null;
+    renderTablePreviewPlaceholder();
+    renderConnections(lastConnections);
+    return;
+  }
+  if (!activeTablePreviewTabId || !tablePreviewTabs.some((t) => t.id === activeTablePreviewTabId)) {
+    activeTablePreviewTabId = keepId;
+    const t = tablePreviewTabs.find((x) => x.id === keepId);
+    selectedTablePreviewKey = t?.previewKey ?? null;
+  } else {
+    const t = tablePreviewTabs.find((x) => x.id === activeTablePreviewTabId);
+    selectedTablePreviewKey = t?.previewKey ?? null;
+  }
+  const area = document.getElementById("table-preview-area");
+  if (area) area.classList.remove("hidden");
+  syncTabPanelVisibility();
+  renderTabStrip();
+  renderConnections(lastConnections);
+}
+
+/**
+ * @param {string} tabId
+ */
+function closeTablePreviewTabsToLeftOf(tabId) {
+  const idx = tablePreviewTabs.findIndex((t) => t.id === tabId);
+  if (idx <= 0) return;
+
+  const toRemove = tablePreviewTabs.slice(0, idx);
+  for (const t of toRemove) {
+    t.panelEl.remove();
+  }
+  tablePreviewTabs = tablePreviewTabs.slice(idx);
+  finalizeActiveAfterBulkClose(tabId);
+}
+
+/**
+ * @param {string} tabId
+ */
+function closeTablePreviewTabsToRightOf(tabId) {
+  const idx = tablePreviewTabs.findIndex((t) => t.id === tabId);
+  if (idx === -1 || idx >= tablePreviewTabs.length - 1) return;
+
+  const toRemove = tablePreviewTabs.slice(idx + 1);
+  for (const t of toRemove) {
+    t.panelEl.remove();
+  }
+  tablePreviewTabs = tablePreviewTabs.slice(0, idx + 1);
+  finalizeActiveAfterBulkClose(tabId);
+}
+
+function closeAllTablePreviewTabs() {
+  renderTablePreviewPlaceholder();
+  renderConnections(lastConnections);
+}
+
+/**
  * @param {import("./appConfig.js").ConnectionProfile} profile
  * @param {string} schemaName
  * @param {string} tableName
@@ -1566,6 +1628,93 @@ async function removeConnectionAfterConfirm(id) {
   }
 }
 
+function initTablePreviewTabContextMenu() {
+  const menu = document.getElementById("table-preview-tab-context-menu");
+  const tabsStrip = document.getElementById("table-preview-tabs");
+  const btnRight = document.getElementById("context-tab-close-right");
+  const btnLeft = document.getElementById("context-tab-close-left");
+  const btnAll = document.getElementById("context-tab-close-all");
+  const btnClose = document.getElementById("context-tab-close");
+  if (!menu || !tabsStrip || !btnRight || !btnLeft || !btnAll || !btnClose) return;
+
+  /** @type {string | null} */
+  let tablePreviewTabContextMenuTargetId = null;
+  let ignoreClosePointerUntil = 0;
+
+  function hideMenu() {
+    menu.classList.add("hidden");
+    tablePreviewTabContextMenuTargetId = null;
+  }
+
+  /**
+   * @param {MouseEvent} e
+   * @param {string} tabId
+   */
+  function showMenu(e, tabId) {
+    e.preventDefault();
+    const idx = tablePreviewTabs.findIndex((t) => t.id === tabId);
+    if (idx === -1) return;
+    tablePreviewTabContextMenuTargetId = tabId;
+    btnLeft.disabled = idx === 0;
+    btnRight.disabled = idx >= tablePreviewTabs.length - 1;
+    btnAll.disabled = tablePreviewTabs.length === 0;
+    btnClose.disabled = false;
+
+    menu.classList.remove("hidden");
+    menu.style.left = `${e.clientX}px`;
+    menu.style.top = `${e.clientY}px`;
+    ignoreClosePointerUntil = performance.now() + 400;
+  }
+
+  tabsStrip.addEventListener("contextmenu", (e) => {
+    const t = e.target;
+    const row = t instanceof Element ? t.closest("[data-tab-id]") : null;
+    const id = row?.dataset?.tabId ?? null;
+    if (!id) return;
+    showMenu(e, id);
+  });
+
+  btnRight.addEventListener("click", () => {
+    const id = tablePreviewTabContextMenuTargetId;
+    hideMenu();
+    if (id) closeTablePreviewTabsToRightOf(id);
+  });
+
+  btnLeft.addEventListener("click", () => {
+    const id = tablePreviewTabContextMenuTargetId;
+    hideMenu();
+    if (id) closeTablePreviewTabsToLeftOf(id);
+  });
+
+  btnAll.addEventListener("click", () => {
+    hideMenu();
+    closeAllTablePreviewTabs();
+  });
+
+  btnClose.addEventListener("click", () => {
+    const id = tablePreviewTabContextMenuTargetId;
+    hideMenu();
+    if (id) closeTablePreviewTab(id);
+  });
+
+  document.addEventListener(
+    "mousedown",
+    (e) => {
+      if (menu.classList.contains("hidden")) return;
+      if (performance.now() < ignoreClosePointerUntil) return;
+      if (e.button !== 0) return;
+      const t = e.target;
+      if (t instanceof Node && menu.contains(t)) return;
+      hideMenu();
+    },
+    true,
+  );
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideMenu();
+  });
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   installPlainTextInputDefaults();
 
@@ -1580,6 +1729,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   setSidebarOpen(config.ui.sidebarOpen);
   initSidebarResize();
   renderConnections(config.connections);
+  initTablePreviewTabContextMenu();
 
   const wizard = initConnectionWizard({
     onConfigUpdated: (next) => {
