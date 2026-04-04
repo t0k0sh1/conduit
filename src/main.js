@@ -1,6 +1,17 @@
 import { getAppConfig, updateAppConfig } from "./appConfig.js";
 import { initConnectionWizard } from "./connectionWizard.js";
 import { installPlainTextInputDefaults } from "./inputBehavior.js";
+import {
+  pruneCacheForConnection,
+  fetchUserSchemas,
+  fetchSystemSchemaNames,
+  fetchExtensions,
+  fetchRelationObjects,
+  getCachedUserSchemas,
+  getCachedSystemSchemas,
+  getCachedExtensions,
+  getCachedRelations,
+} from "./dbMetadata.js";
 
 const SIDEBAR_OPEN = ["w-64", "opacity-100", "border-r"];
 const SIDEBAR_CLOSED = ["w-0", "opacity-0", "border-r-0", "pointer-events-none"];
@@ -8,17 +19,384 @@ const SIDEBAR_CLOSED = ["w-0", "opacity-0", "border-r-0", "pointer-events-none"]
 /** @type {string | null} */
 let selectedConnectionId = null;
 
-/** Connection profiles whose database node is expanded in the tree (no real DB connection yet). */
+/** Connection profiles whose database node is expanded in the tree. */
 const openConnectionIds = new Set();
+
+/**
+ * Expanded paths under a connection (lazy-loaded from PostgreSQL).
+ * @type {Set<string>}
+ */
+const expandedTreePaths = new Set();
+
+/** Paths currently awaiting metadata (show loading row). @type {Set<string>} */
+const loadingPaths = new Set();
+
+/** @type {Map<string, string>} */
+const errorsByPath = new Map();
 
 /** @type {import("./appConfig.js").ConnectionProfile[]} */
 let lastConnections = [];
+
+/** Object-kind folders under each schema (matches Rust `parse_relation_kind`). */
+const KIND_GROUPS = [
+  { key: "tables", label: "Tables" },
+  { key: "views", label: "Views" },
+  { key: "materialized_views", label: "Materialized views" },
+  { key: "functions", label: "Functions" },
+  { key: "sequences", label: "Sequences" },
+];
 
 /**
  * @param {string} id
  */
 function isConnectionOpen(id) {
   return openConnectionIds.has(id);
+}
+
+/**
+ * @param {string} connectionId
+ */
+function pruneExpandedPathsForConnection(connectionId) {
+  const head = `${connectionId}::`;
+  for (const p of [...expandedTreePaths]) {
+    if (p.startsWith(head)) expandedTreePaths.delete(p);
+  }
+  for (const k of [...errorsByPath.keys()]) {
+    if (k.startsWith(head)) errorsByPath.delete(k);
+  }
+  for (const k of [...loadingPaths]) {
+    if (k.startsWith(head)) loadingPaths.delete(k);
+  }
+}
+
+/**
+ * @param {string} path
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ */
+async function ensureLoaded(path, profile) {
+  const id = profile.id;
+  const parts = path.split("::");
+  if (parts[0] !== id) return;
+  if (parts.length === 2 && parts[1] === "schemas") {
+    await fetchUserSchemas(profile);
+    return;
+  }
+  if (parts.length === 2 && parts[1] === "system") {
+    await fetchSystemSchemaNames(profile);
+    return;
+  }
+  if (parts.length === 2 && parts[1] === "extensions") {
+    await fetchExtensions(profile);
+    return;
+  }
+  if (parts.length === 4 && parts[1] === "schema") {
+    const schema = parts[2];
+    const kind = parts[3];
+    await fetchRelationObjects(profile, schema, kind);
+    return;
+  }
+  if (parts.length === 4 && parts[1] === "system") {
+    const schema = parts[2];
+    const kind = parts[3];
+    await fetchRelationObjects(profile, schema, kind);
+  }
+}
+
+/**
+ * @param {string} path
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ */
+async function toggleTreePath(path, profile) {
+  if (expandedTreePaths.has(path)) {
+    expandedTreePaths.delete(path);
+    renderConnections(lastConnections);
+    return;
+  }
+  expandedTreePaths.add(path);
+
+  const id = profile.id;
+  const needsFetch =
+    path === `${id}::schemas` ||
+    path === `${id}::system` ||
+    path === `${id}::extensions` ||
+    (path.startsWith(`${id}::schema::`) && path.split("::").length === 4) ||
+    (path.startsWith(`${id}::system::`) && path.split("::").length === 4);
+
+  if (needsFetch) {
+    loadingPaths.add(path);
+    renderConnections(lastConnections);
+    try {
+      errorsByPath.delete(path);
+      await ensureLoaded(path, profile);
+    } catch (e) {
+      errorsByPath.set(path, e instanceof Error ? e.message : String(e));
+    } finally {
+      loadingPaths.delete(path);
+    }
+    renderConnections(lastConnections);
+    return;
+  }
+  renderConnections(lastConnections);
+}
+
+/**
+ * @param {string} label
+ * @param {boolean} expanded
+ * @param {boolean} hasChildren
+ * @param {() => void} onToggle
+ */
+function createTreeRow(label, expanded, hasChildren, onToggle) {
+  const row = document.createElement("div");
+  row.className = "flex min-w-0 items-center gap-0.5 rounded px-1 py-0.5 text-stone-700";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className =
+    "flex h-5 w-5 shrink-0 items-center justify-center rounded text-stone-500 hover:bg-stone-200/80 hover:text-stone-800";
+  btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+  if (hasChildren) {
+    btn.setAttribute("aria-label", expanded ? "Collapse" : "Expand");
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onToggle();
+    });
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute(
+      "class",
+      `h-3.5 w-3.5 transition-transform ${expanded ? "rotate-90" : ""}`,
+    );
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "currentColor");
+    svg.setAttribute("aria-hidden", "true");
+    const tri = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    tri.setAttribute("d", "M8 5l8 7-8 7V5z");
+    svg.appendChild(tri);
+    btn.appendChild(svg);
+  } else {
+    btn.classList.add("invisible", "pointer-events-none");
+    btn.setAttribute("tabindex", "-1");
+    btn.setAttribute("aria-hidden", "true");
+  }
+  const span = document.createElement("span");
+  span.className = "min-w-0 truncate";
+  span.textContent = label;
+  row.appendChild(btn);
+  row.appendChild(span);
+  return row;
+}
+
+/**
+ * @param {string} label
+ */
+function createLeafRow(label) {
+  const row = document.createElement("div");
+  row.className = "rounded px-1 py-0.5 pl-6 font-mono text-xs text-stone-600";
+  row.textContent = label;
+  return row;
+}
+
+/**
+ * @param {HTMLUListElement} parentUl
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ */
+function renderDbTreeInto(parentUl, profile) {
+  const id = profile.id;
+  const prefix = `${id}::`;
+
+  const schemasPath = `${prefix}schemas`;
+  const schemasOpen = expandedTreePaths.has(schemasPath);
+  const liSchemas = document.createElement("li");
+  liSchemas.appendChild(
+    createTreeRow("Schemas", schemasOpen, true, () => void toggleTreePath(schemasPath, profile)),
+  );
+  if (schemasOpen) {
+    const ul = document.createElement("ul");
+    ul.className = "mt-0.5 border-l border-stone-200/80 pl-2";
+    ul.setAttribute("aria-label", "Schemas");
+    if (loadingPaths.has(schemasPath)) {
+      const li = document.createElement("li");
+      li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
+      li.textContent = "Loading…";
+      ul.appendChild(li);
+    } else if (errorsByPath.has(schemasPath)) {
+      const li = document.createElement("li");
+      li.className = "rounded px-1 py-0.5 pl-6 text-xs text-red-600";
+      li.textContent = errorsByPath.get(schemasPath) ?? "";
+      ul.appendChild(li);
+    } else {
+      const names = getCachedUserSchemas(id);
+      if (names === undefined) {
+        const li = document.createElement("li");
+        li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
+        li.textContent = "Expand to load.";
+        ul.appendChild(li);
+      } else if (names.length === 0) {
+        const li = document.createElement("li");
+        li.className = "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
+        li.textContent = "(no items)";
+        ul.appendChild(li);
+      } else {
+        for (const schemaName of names) {
+          appendSchemaSubtree(ul, profile, schemaName, false);
+        }
+      }
+    }
+    liSchemas.appendChild(ul);
+  }
+  parentUl.appendChild(liSchemas);
+
+  const systemPath = `${prefix}system`;
+  const systemOpen = expandedTreePaths.has(systemPath);
+  const liSys = document.createElement("li");
+  liSys.appendChild(
+    createTreeRow("System schemas", systemOpen, true, () => void toggleTreePath(systemPath, profile)),
+  );
+  if (systemOpen) {
+    const ul = document.createElement("ul");
+    ul.className = "mt-0.5 border-l border-stone-200/80 pl-2";
+    ul.setAttribute("aria-label", "System schemas");
+    if (loadingPaths.has(systemPath)) {
+      const li = document.createElement("li");
+      li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
+      li.textContent = "Loading…";
+      ul.appendChild(li);
+    } else if (errorsByPath.has(systemPath)) {
+      const li = document.createElement("li");
+      li.className = "rounded px-1 py-0.5 pl-6 text-xs text-red-600";
+      li.textContent = errorsByPath.get(systemPath) ?? "";
+      ul.appendChild(li);
+    } else {
+      const names = getCachedSystemSchemas(id);
+      if (names === undefined) {
+        const li = document.createElement("li");
+        li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
+        li.textContent = "Expand to load.";
+        ul.appendChild(li);
+      } else if (names.length === 0) {
+        const li = document.createElement("li");
+        li.className = "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
+        li.textContent = "(no items)";
+        ul.appendChild(li);
+      } else {
+        for (const schemaName of names) {
+          appendSchemaSubtree(ul, profile, schemaName, true);
+        }
+      }
+    }
+    liSys.appendChild(ul);
+  }
+  parentUl.appendChild(liSys);
+
+  const extPath = `${prefix}extensions`;
+  const extOpen = expandedTreePaths.has(extPath);
+  const liExt = document.createElement("li");
+  liExt.appendChild(
+    createTreeRow("Extensions", extOpen, true, () => void toggleTreePath(extPath, profile)),
+  );
+  if (extOpen) {
+    const ul = document.createElement("ul");
+    ul.className = "mt-0.5 border-l border-stone-200/80 pl-2";
+    ul.setAttribute("aria-label", "Extensions");
+    if (loadingPaths.has(extPath)) {
+      const li = document.createElement("li");
+      li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
+      li.textContent = "Loading…";
+      ul.appendChild(li);
+    } else if (errorsByPath.has(extPath)) {
+      const li = document.createElement("li");
+      li.className = "rounded px-1 py-0.5 pl-6 text-xs text-red-600";
+      li.textContent = errorsByPath.get(extPath) ?? "";
+      ul.appendChild(li);
+    } else {
+      const names = getCachedExtensions(id);
+      if (names === undefined) {
+        const li = document.createElement("li");
+        li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
+        li.textContent = "Expand to load.";
+        ul.appendChild(li);
+      } else if (names.length === 0) {
+        const li = document.createElement("li");
+        li.className = "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
+        li.textContent = "(no items)";
+        ul.appendChild(li);
+      } else {
+        for (const name of names) {
+          const li = document.createElement("li");
+          li.appendChild(createLeafRow(name));
+          ul.appendChild(li);
+        }
+      }
+    }
+    liExt.appendChild(ul);
+  }
+  parentUl.appendChild(liExt);
+}
+
+/**
+ * @param {HTMLUListElement} ul
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @param {string} schemaName
+ * @param {boolean} isSystem
+ */
+function appendSchemaSubtree(ul, profile, schemaName, isSystem) {
+  const id = profile.id;
+  const basePath = isSystem
+    ? `${id}::system::${schemaName}`
+    : `${id}::schema::${schemaName}`;
+  const open = expandedTreePaths.has(basePath);
+  const li = document.createElement("li");
+  li.appendChild(
+    createTreeRow(schemaName, open, true, () => void toggleTreePath(basePath, profile)),
+  );
+  if (open) {
+    const ulG = document.createElement("ul");
+    ulG.className = "mt-0.5 border-l border-stone-200/80 pl-2";
+    for (const { key, label } of KIND_GROUPS) {
+      const p = `${basePath}::${key}`;
+      const gOpen = expandedTreePaths.has(p);
+      const liG = document.createElement("li");
+      liG.appendChild(
+        createTreeRow(label, gOpen, true, () => void toggleTreePath(p, profile)),
+      );
+      if (gOpen) {
+        const ulN = document.createElement("ul");
+        ulN.className = "mt-0.5 border-l border-stone-200/80 pl-2";
+        if (loadingPaths.has(p)) {
+          const liL = document.createElement("li");
+          liL.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
+          liL.textContent = "Loading…";
+          ulN.appendChild(liL);
+        } else if (errorsByPath.has(p)) {
+          const liL = document.createElement("li");
+          liL.className = "rounded px-1 py-0.5 pl-6 text-xs text-red-600";
+          liL.textContent = errorsByPath.get(p) ?? "";
+          ulN.appendChild(liL);
+        } else {
+          const objs = getCachedRelations(id, schemaName, key);
+          if (objs === undefined) {
+            const liL = document.createElement("li");
+            liL.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
+            liL.textContent = "Expand to load.";
+            ulN.appendChild(liL);
+          } else if (objs.length === 0) {
+            const liL = document.createElement("li");
+            liL.className = "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
+            liL.textContent = "(no items)";
+            ulN.appendChild(liL);
+          } else {
+            for (const n of objs) {
+              const liN = document.createElement("li");
+              liN.appendChild(createLeafRow(n));
+              ulN.appendChild(liN);
+            }
+          }
+        }
+        liG.appendChild(ulN);
+      }
+      ulG.appendChild(liG);
+    }
+    li.appendChild(ulG);
+  }
+  ul.appendChild(li);
 }
 
 /**
@@ -34,6 +412,8 @@ function openConnection(id) {
  */
 function closeConnection(id) {
   openConnectionIds.delete(id);
+  pruneExpandedPathsForConnection(id);
+  pruneCacheForConnection(id);
   renderConnections(lastConnections);
 }
 
@@ -73,6 +453,8 @@ function renderConnections(connections) {
   for (const id of [...openConnectionIds]) {
     if (!connections.some((c) => c.id === id)) {
       openConnectionIds.delete(id);
+      pruneExpandedPathsForConnection(id);
+      pruneCacheForConnection(id);
     }
   }
 
@@ -134,10 +516,7 @@ function renderConnections(connections) {
       const nested = document.createElement("ul");
       nested.className = "mt-0.5 ml-2 border-l border-stone-200/80 pl-2";
       nested.setAttribute("aria-label", "Database objects");
-      const schemaLi = document.createElement("li");
-      schemaLi.className = "rounded px-1 py-0.5 text-stone-700";
-      schemaLi.textContent = "Schemas";
-      nested.appendChild(schemaLi);
+      renderDbTreeInto(nested, c);
       li.appendChild(nested);
     }
 
@@ -207,6 +586,8 @@ async function removeConnectionAfterConfirm(id) {
     if (selectedConnectionId === id) {
       selectedConnectionId = null;
     }
+    pruneExpandedPathsForConnection(id);
+    pruneCacheForConnection(id);
     renderConnections(next.connections);
   } catch (err) {
     const status = document.getElementById("status-message");
