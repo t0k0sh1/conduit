@@ -5,7 +5,7 @@
  */
 
 /** @typedef {{ sidebarOpen: boolean }} UiSettings */
-/** @typedef {{ id: string, label: string, host: string, port: number, database: string, user: string, password: string }} ConnectionProfile */
+/** @typedef {{ id: string, label: string, host: string, port: number, database: string, user: string, password: string, savePasswordInProfile: boolean }} ConnectionProfile */
 /** @typedef {{ ui: UiSettings, connections: ConnectionProfile[] }} AppConfig */
 
 export const COMMANDS = {

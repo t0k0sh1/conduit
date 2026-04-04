@@ -1,4 +1,6 @@
 import { getAppConfig, updateAppConfig } from "./appConfig.js";
+import { initConnectionWizard } from "./connectionWizard.js";
+import { installPlainTextInputDefaults } from "./inputBehavior.js";
 
 const SIDEBAR_OPEN = ["w-64", "opacity-100", "border-r"];
 const SIDEBAR_CLOSED = ["w-0", "opacity-0", "border-r-0", "pointer-events-none"];
@@ -55,6 +57,8 @@ function renderConnections(connections) {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  installPlainTextInputDefaults();
+
   const toggle = document.getElementById("sidebar-toggle");
   if (!toggle) return;
 
@@ -62,6 +66,12 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   setSidebarOpen(config.ui.sidebarOpen);
   renderConnections(config.connections);
+
+  initConnectionWizard({
+    onConfigUpdated: (next) => {
+      renderConnections(next.connections);
+    },
+  });
 
   toggle.addEventListener("click", async () => {
     const next = await updateAppConfig((c) => {

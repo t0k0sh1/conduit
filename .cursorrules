@@ -1,0 +1,13 @@
+# Conduit — Cursor rules
+
+## User-facing language
+
+- All **user-facing copy** in this project must be **English**: UI labels, buttons, dialogs, tooltips, `title` / `aria-label` / `aria-*`, status messages, validation and error strings shown to the user, and context menu items.
+- Code comments, internal identifiers, and Rust docs may stay in English unless the team agrees otherwise.
+
+## Plain text input (no exceptions)
+
+- Text entry must be **raw keystrokes only**: no automatic capitalization, spell-check underlines, autocorrect, predictive text, or browser/OS “smart” substitutions.
+- For **every** `<input>` (except non-text types: `checkbox`, `radio`, `file`, `button`, `submit`, `reset`, `hidden`, `image`), `<textarea>`, and `contenteditable="true"` region, set at minimum: **`spellcheck="false"`**, **`autocomplete="off"`**, **`autocapitalize="off"`**, **`autocorrect="off"`** (WebKit).
+- Prefer **`autocomplete="off"`** on parent `<form>` where applicable. Do not use `autocomplete` token values that invite suggestions (e.g. avoid `new-password` unless there is a documented exception—there are none by default).
+- New UI must go through [`src/inputBehavior.js`](src/inputBehavior.js) (`installPlainTextInputDefaults`) so dynamically added controls get the same attributes; do not add inputs without this behavior.

@@ -23,7 +23,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             ui: UiSettings::default(),
-            connections: vec![ConnectionProfile::default_local_dev()],
+            connections: vec![],
         }
     }
 }
@@ -51,20 +51,13 @@ pub struct ConnectionProfile {
     pub database: String,
     pub user: String,
     pub password: String,
+    /// When `false`, password is never stored in the profile (empty string); prompt at connect time (future).
+    #[serde(default = "default_save_password_in_profile")]
+    pub save_password_in_profile: bool,
 }
 
-impl ConnectionProfile {
-    fn default_local_dev() -> Self {
-        Self {
-            id: "local-dev".into(),
-            label: "local_postgres".into(),
-            host: "127.0.0.1".into(),
-            port: 15432,
-            database: "postgres".into(),
-            user: "postgres".into(),
-            password: "postgres".into(),
-        }
-    }
+fn default_save_password_in_profile() -> bool {
+    false
 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
