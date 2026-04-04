@@ -1,9 +1,12 @@
 import { updateAppConfig } from "./appConfig.js";
 
 /**
- * @param {{ onConfigUpdated: (config: import("./appConfig.js").AppConfig) => void }} options
+ * @param {{
+ *   onConfigUpdated: (config: import("./appConfig.js").AppConfig) => void;
+ *   onDeleteConnection?: (id: string) => void | Promise<void>;
+ * }} options
  */
-export function initConnectionWizard({ onConfigUpdated }) {
+export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
   const dialog = /** @type {HTMLDialogElement | null} */ (document.getElementById("connection-wizard-dialog"));
   const form = document.getElementById("connection-wizard-form");
   const addBtn = document.getElementById("add-connection-btn");
@@ -15,6 +18,9 @@ export function initConnectionWizard({ onConfigUpdated }) {
   const errorEl = document.getElementById("wizard-error");
   const menu = document.getElementById("connection-tree-context-menu");
   const contextAdd = document.getElementById("context-add-connection");
+  const contextDelete = /** @type {HTMLButtonElement | null} */ (
+    document.getElementById("context-delete-connection")
+  );
   const treeNav = document.getElementById("connection-tree-nav");
 
   if (
@@ -26,10 +32,14 @@ export function initConnectionWizard({ onConfigUpdated }) {
     !passwordInput ||
     !errorEl ||
     !menu ||
-    !contextAdd
+    !contextAdd ||
+    !contextDelete
   ) {
     return;
   }
+
+  /** @type {string | null} */
+  let contextMenuConnectionId = null;
 
   function syncPasswordField() {
     const save = savePasswordCheckbox.checked;
@@ -119,6 +129,11 @@ export function initConnectionWizard({ onConfigUpdated }) {
 
   function showContextMenu(e) {
     e.preventDefault();
+    const t = e.target;
+    const row =
+      t instanceof Element ? t.closest("[data-connection-id]") : null;
+    contextMenuConnectionId = row?.dataset.connectionId ?? null;
+    contextDelete.disabled = contextMenuConnectionId == null;
     menu.classList.remove("hidden");
     menu.style.left = `${e.clientX}px`;
     menu.style.top = `${e.clientY}px`;
@@ -134,6 +149,14 @@ export function initConnectionWizard({ onConfigUpdated }) {
   contextAdd.addEventListener("click", () => {
     hideContextMenu();
     openWizard();
+  });
+
+  contextDelete.addEventListener("click", () => {
+    hideContextMenu();
+    const id = contextMenuConnectionId;
+    if (id && onDeleteConnection) {
+      void Promise.resolve(onDeleteConnection(id));
+    }
   });
 
   /** Close on left-button mousedown outside the menu (not `click` — avoids closing on the opener gesture). */

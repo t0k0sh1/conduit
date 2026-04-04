@@ -5,6 +5,9 @@ import { installPlainTextInputDefaults } from "./inputBehavior.js";
 const SIDEBAR_OPEN = ["w-64", "opacity-100", "border-r"];
 const SIDEBAR_CLOSED = ["w-0", "opacity-0", "border-r-0", "pointer-events-none"];
 
+/** @type {string | null} */
+let selectedConnectionId = null;
+
 function setSidebarOpen(open) {
   const sidebar = document.getElementById("sidebar");
   const toggle = document.getElementById("sidebar-toggle");
@@ -21,17 +24,44 @@ function setSidebarOpen(open) {
   toggle.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
+function syncRemoveButtonState() {
+  const btn = document.getElementById("remove-connection-btn");
+  if (!(btn instanceof HTMLButtonElement)) return;
+  btn.disabled = selectedConnectionId == null;
+}
+
+/**
+ * @param {import("./appConfig.js").ConnectionProfile[]} connections
+ */
 function renderConnections(connections) {
   const list = document.getElementById("connections-list");
   if (!list) return;
+
+  if (selectedConnectionId && !connections.some((c) => c.id === selectedConnectionId)) {
+    selectedConnectionId = null;
+  }
 
   list.replaceChildren();
 
   for (const c of connections) {
     const li = document.createElement("li");
+    li.dataset.connectionId = c.id;
+    li.className = "rounded";
+
     const row = document.createElement("div");
-    row.className = "flex items-center gap-1 rounded px-1 py-0.5 text-stone-800";
+    row.className =
+      "flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-stone-800";
+    if (selectedConnectionId === c.id) {
+      row.classList.add("bg-stone-200/80", "ring-1", "ring-stone-300/40");
+    }
     row.title = `${c.host}:${c.port}/${c.database}`;
+    row.setAttribute("aria-selected", selectedConnectionId === c.id ? "true" : "false");
+
+    row.addEventListener("click", (e) => {
+      e.stopPropagation();
+      selectedConnectionId = c.id;
+      renderConnections(connections);
+    });
 
     const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     icon.setAttribute("class", "h-4 w-4 shrink-0 text-amber-700/90");
@@ -54,6 +84,77 @@ function renderConnections(connections) {
     li.appendChild(row);
     list.appendChild(li);
   }
+
+  syncRemoveButtonState();
+}
+
+/**
+ * @param {string} connectionLabel
+ * @returns {Promise<boolean>}
+ */
+function waitForDeleteConfirmation(connectionLabel) {
+  const dialog = /** @type {HTMLDialogElement | null} */ (
+    document.getElementById("delete-connection-dialog")
+  );
+  const msg = document.getElementById("delete-connection-message");
+  const cancelBtn = document.getElementById("delete-connection-cancel");
+  const confirmBtn = document.getElementById("delete-connection-confirm");
+  if (!dialog || !msg || !cancelBtn || !confirmBtn) {
+    return Promise.resolve(false);
+  }
+  msg.textContent = `Remove "${connectionLabel}"?`;
+  dialog.showModal();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (confirmed) => {
+      if (settled) return;
+      settled = true;
+      cancelBtn.removeEventListener("click", onCancel);
+      confirmBtn.removeEventListener("click", onConfirm);
+      dialog.removeEventListener("cancel", onEscape);
+      resolve(confirmed);
+    };
+    const onCancel = () => {
+      dialog.close();
+      finish(false);
+    };
+    const onConfirm = () => {
+      dialog.close();
+      finish(true);
+    };
+    const onEscape = () => {
+      finish(false);
+    };
+    cancelBtn.addEventListener("click", onCancel);
+    confirmBtn.addEventListener("click", onConfirm);
+    dialog.addEventListener("cancel", onEscape);
+  });
+}
+
+/**
+ * @param {string} id
+ */
+async function removeConnectionAfterConfirm(id) {
+  const config = await getAppConfig();
+  const profile = config.connections.find((p) => p.id === id);
+  if (!profile) return;
+  const label = profile.label || profile.id;
+  const ok = await waitForDeleteConfirmation(label);
+  if (!ok) return;
+  try {
+    const next = await updateAppConfig((c) => {
+      c.connections = c.connections.filter((p) => p.id !== id);
+    });
+    if (selectedConnectionId === id) {
+      selectedConnectionId = null;
+    }
+    renderConnections(next.connections);
+  } catch (err) {
+    const status = document.getElementById("status-message");
+    if (status) {
+      status.textContent = err instanceof Error ? err.message : "Failed to remove connection.";
+    }
+  }
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
@@ -71,6 +172,14 @@ window.addEventListener("DOMContentLoaded", async () => {
     onConfigUpdated: (next) => {
       renderConnections(next.connections);
     },
+    onDeleteConnection: removeConnectionAfterConfirm,
+  });
+
+  const removeBtn = document.getElementById("remove-connection-btn");
+  removeBtn?.addEventListener("click", () => {
+    if (selectedConnectionId) {
+      void removeConnectionAfterConfirm(selectedConnectionId);
+    }
   });
 
   toggle.addEventListener("click", async () => {
