@@ -403,7 +403,8 @@ function renderTablePreviewTable(data) {
   body.replaceChildren();
 
   const table = document.createElement("table");
-  table.className = "w-full border-collapse text-left text-xs text-stone-800";
+  table.className =
+    "min-w-full w-max border-collapse text-left text-xs text-stone-800";
 
   const thead = document.createElement("thead");
   const trh = document.createElement("tr");
