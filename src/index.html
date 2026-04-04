@@ -142,46 +142,7 @@
             Objects
           </div>
           <nav class="min-h-0 flex-1 overflow-y-auto px-2 py-2 text-sm" aria-label="Connection tree">
-            <ul class="space-y-0.5">
-              <li>
-                <div class="flex items-center gap-1 rounded px-1 py-0.5 text-stone-800">
-                  <svg class="h-4 w-4 shrink-0 text-amber-700/90" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M4 7c0-1.1.9-2 2-2h12a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V7zm2 0v10h12V7H6z" />
-                  </svg>
-                  <span class="truncate">local_postgres</span>
-                </div>
-                <ul class="ml-3 mt-0.5 border-l border-stone-300/80 pl-2">
-                  <li>
-                    <div class="flex items-center gap-1 rounded px-1 py-0.5 text-stone-700">
-                      <svg class="h-4 w-4 shrink-0 text-stone-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                      </svg>
-                      <span class="truncate">public</span>
-                    </div>
-                    <ul class="ml-3 mt-0.5 border-l border-stone-300/80 pl-2">
-                      <li class="flex items-center gap-1 rounded px-1 py-0.5 text-stone-600 hover:bg-stone-200/70">
-                        <svg class="h-3.5 w-3.5 shrink-0 text-stone-500" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h10v2H4v-2z" />
-                        </svg>
-                        <span class="truncate">users</span>
-                      </li>
-                      <li class="flex items-center gap-1 rounded px-1 py-0.5 text-stone-600 hover:bg-stone-200/70">
-                        <svg class="h-3.5 w-3.5 shrink-0 text-stone-500" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h10v2H4v-2z" />
-                        </svg>
-                        <span class="truncate">orders</span>
-                      </li>
-                    </ul>
-                  </li>
-                  <li class="mt-0.5 flex items-center gap-1 rounded px-1 py-0.5 text-stone-600">
-                    <svg class="h-4 w-4 shrink-0 text-stone-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-                    </svg>
-                    <span class="truncate">analytics</span>
-                  </li>
-                </ul>
-              </li>
-            </ul>
+            <ul id="connections-list" class="space-y-0.5"></ul>
           </nav>
         </aside>
 
