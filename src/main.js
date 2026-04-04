@@ -547,11 +547,6 @@ function renderTabStrip() {
         ghostEl: null,
         hoverTargetId: null,
       };
-      try {
-        wrap.setPointerCapture(e.pointerId);
-      } catch (_) {
-        /* ignore */
-      }
     });
     wrap.addEventListener("pointermove", (e) => {
       if (!pointerTabDrag || pointerTabDrag.tabId !== tab.id) return;
@@ -580,6 +575,12 @@ function renderTabStrip() {
         pointerTabDrag.ghostEl = ghost;
 
         wrap.classList.add("opacity-25");
+
+        try {
+          wrap.setPointerCapture(e.pointerId);
+        } catch (_) {
+          /* ignore */
+        }
       }
 
       if (pointerTabDrag.dragging && pointerTabDrag.ghostEl) {
