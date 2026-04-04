@@ -496,13 +496,22 @@ async function openConnection(id) {
   }
 
   pruneCacheForConnection(id);
+  /** @type {string[]} */
+  let schemaNames = [];
   try {
-    await fetchUserSchemas(profile);
+    schemaNames = await fetchUserSchemas(profile);
+    await Promise.all(
+      schemaNames.map((schemaName) =>
+        fetchRelationObjects(profile, schemaName, "tables"),
+      ),
+    );
   } catch (e) {
     setStatusMessage(formatConnectionFailureMessage(e));
     clearSessionPassword(id);
     return;
   }
+
+  expandedTreePaths.add(`${id}::schemas`);
 
   openConnectionIds.add(id);
   setStatusMessage("Ready");
