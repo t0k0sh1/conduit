@@ -162,6 +162,23 @@
               </button>
               <button
                 type="button"
+                id="edit-connection-btn"
+                disabled
+                class="rounded p-1 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-stone-600"
+                title="Edit database"
+                aria-label="Edit database"
+              >
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                  />
+                </svg>
+              </button>
+              <button
+                type="button"
                 id="remove-connection-btn"
                 disabled
                 class="rounded p-1 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-stone-600"
@@ -242,6 +259,15 @@
       <button
         type="button"
         role="menuitem"
+        id="context-edit-connection"
+        disabled
+        class="w-full px-3 py-1.5 text-left hover:bg-stone-200/90 disabled:cursor-default disabled:text-stone-400 disabled:hover:bg-transparent"
+      >
+        Edit database
+      </button>
+      <button
+        type="button"
+        role="menuitem"
         id="context-delete-connection"
         disabled
         class="w-full px-3 py-1.5 text-left text-red-800 hover:bg-stone-200/90 disabled:cursor-default disabled:text-stone-400 disabled:hover:bg-transparent"
@@ -260,7 +286,7 @@
         autocomplete="off"
       >
         <div class="border-b border-stone-200/80 px-4 py-3">
-          <h2 class="text-sm font-semibold text-stone-900">Add database connection</h2>
+          <h2 id="wizard-dialog-title" class="text-sm font-semibold text-stone-900">Add database connection</h2>
           <p class="mt-0.5 text-xs text-stone-500">Step 1 / 1</p>
         </div>
         <div id="wizard-steps" class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
@@ -369,7 +395,7 @@
             id="wizard-submit"
             class="rounded border border-amber-800/40 bg-amber-900/90 px-3 py-1.5 text-xs font-medium text-[#fffcf7] hover:bg-amber-950"
           >
-            Add
+            <span id="wizard-submit-label">Add</span>
           </button>
         </div>
       </form>

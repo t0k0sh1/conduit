@@ -1,4 +1,4 @@
-import { updateAppConfig } from "./appConfig.js";
+import { getAppConfig, updateAppConfig } from "./appConfig.js";
 
 /**
  * @param {{
@@ -11,6 +11,8 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
   const form = document.getElementById("connection-wizard-form");
   const addBtn = document.getElementById("add-connection-btn");
   const cancelBtn = document.getElementById("wizard-cancel");
+  const dialogTitle = document.getElementById("wizard-dialog-title");
+  const submitLabel = document.getElementById("wizard-submit-label");
   const savePasswordCheckbox = /** @type {HTMLInputElement | null} */ (
     document.getElementById("wizard-save-password")
   );
@@ -18,6 +20,9 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
   const errorEl = document.getElementById("wizard-error");
   const menu = document.getElementById("connection-tree-context-menu");
   const contextAdd = document.getElementById("context-add-connection");
+  const contextEdit = /** @type {HTMLButtonElement | null} */ (
+    document.getElementById("context-edit-connection")
+  );
   const contextDelete = /** @type {HTMLButtonElement | null} */ (
     document.getElementById("context-delete-connection")
   );
@@ -28,18 +33,34 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
     !form ||
     !addBtn ||
     !cancelBtn ||
+    !dialogTitle ||
+    !submitLabel ||
     !savePasswordCheckbox ||
     !passwordInput ||
     !errorEl ||
     !menu ||
     !contextAdd ||
+    !contextEdit ||
     !contextDelete
   ) {
-    return;
+    return undefined;
   }
 
   /** @type {string | null} */
   let contextMenuConnectionId = null;
+
+  /** @type {string | null} */
+  let editingConnectionId = null;
+
+  function setWizardMode(mode) {
+    if (mode === "edit") {
+      dialogTitle.textContent = "Edit database connection";
+      submitLabel.textContent = "Save";
+    } else {
+      dialogTitle.textContent = "Add database connection";
+      submitLabel.textContent = "Add";
+    }
+  }
 
   function syncPasswordField() {
     const save = savePasswordCheckbox.checked;
@@ -60,6 +81,8 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
   }
 
   function openWizard() {
+    editingConnectionId = null;
+    setWizardMode("add");
     form.reset();
     savePasswordCheckbox.checked = false;
     const portInput = form.querySelector('[name="port"]');
@@ -71,9 +94,44 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
     dialog.showModal();
   }
 
+  /**
+   * @param {import("./appConfig.js").ConnectionProfile} profile
+   */
+  function applyProfileToForm(profile) {
+    const labelInput = form.querySelector('[name="label"]');
+    const hostInput = form.querySelector('[name="host"]');
+    const portInput = form.querySelector('[name="port"]');
+    const databaseInput = form.querySelector('[name="database"]');
+    const userInput = form.querySelector('[name="user"]');
+    if (labelInput instanceof HTMLInputElement) labelInput.value = profile.label;
+    if (hostInput instanceof HTMLInputElement) hostInput.value = profile.host;
+    if (portInput instanceof HTMLInputElement) portInput.value = String(profile.port);
+    if (databaseInput instanceof HTMLInputElement) databaseInput.value = profile.database;
+    if (userInput instanceof HTMLInputElement) userInput.value = profile.user;
+    savePasswordCheckbox.checked = profile.savePasswordInProfile;
+    passwordInput.value = profile.savePasswordInProfile ? profile.password : "";
+    syncPasswordField();
+  }
+
+  async function openEditWizard(id) {
+    const config = await getAppConfig();
+    const profile = config.connections.find((p) => p.id === id);
+    if (!profile) return;
+    editingConnectionId = id;
+    setWizardMode("edit");
+    applyProfileToForm(profile);
+    clearError();
+    dialog.showModal();
+  }
+
   function closeWizard() {
     dialog.close();
   }
+
+  dialog.addEventListener("close", () => {
+    editingConnectionId = null;
+    setWizardMode("add");
+  });
 
   addBtn.addEventListener("click", openWizard);
   cancelBtn.addEventListener("click", closeWizard);
@@ -102,8 +160,9 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
       return;
     }
 
+    const id = editingConnectionId ?? crypto.randomUUID();
     const profile = {
-      id: crypto.randomUUID(),
+      id,
       label,
       host,
       port,
@@ -115,7 +174,14 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
 
     try {
       const next = await updateAppConfig((c) => {
-        c.connections.push(profile);
+        if (editingConnectionId) {
+          const idx = c.connections.findIndex((p) => p.id === editingConnectionId);
+          if (idx >= 0) {
+            c.connections[idx] = profile;
+          }
+        } else {
+          c.connections.push(profile);
+        }
       });
       onConfigUpdated(next);
       closeWizard();
@@ -133,7 +199,9 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
     const row =
       t instanceof Element ? t.closest("[data-connection-id]") : null;
     contextMenuConnectionId = row?.dataset.connectionId ?? null;
-    contextDelete.disabled = contextMenuConnectionId == null;
+    const hasRow = contextMenuConnectionId != null;
+    contextEdit.disabled = !hasRow;
+    contextDelete.disabled = !hasRow;
     menu.classList.remove("hidden");
     menu.style.left = `${e.clientX}px`;
     menu.style.top = `${e.clientY}px`;
@@ -149,6 +217,14 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
   contextAdd.addEventListener("click", () => {
     hideContextMenu();
     openWizard();
+  });
+
+  contextEdit.addEventListener("click", () => {
+    hideContextMenu();
+    const id = contextMenuConnectionId;
+    if (id) {
+      void openEditWizard(id);
+    }
   });
 
   contextDelete.addEventListener("click", () => {
@@ -176,4 +252,6 @@ export function initConnectionWizard({ onConfigUpdated, onDeleteConnection }) {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") hideContextMenu();
   });
+
+  return { openEditWizard };
 }

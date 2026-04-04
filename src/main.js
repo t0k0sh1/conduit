@@ -24,10 +24,12 @@ function setSidebarOpen(open) {
   toggle.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
-function syncRemoveButtonState() {
-  const btn = document.getElementById("remove-connection-btn");
-  if (!(btn instanceof HTMLButtonElement)) return;
-  btn.disabled = selectedConnectionId == null;
+function syncConnectionActionButtons() {
+  const removeBtn = document.getElementById("remove-connection-btn");
+  const editBtn = document.getElementById("edit-connection-btn");
+  const disabled = selectedConnectionId == null;
+  if (removeBtn instanceof HTMLButtonElement) removeBtn.disabled = disabled;
+  if (editBtn instanceof HTMLButtonElement) editBtn.disabled = disabled;
 }
 
 /**
@@ -85,7 +87,7 @@ function renderConnections(connections) {
     list.appendChild(li);
   }
 
-  syncRemoveButtonState();
+  syncConnectionActionButtons();
 }
 
 /**
@@ -168,11 +170,18 @@ window.addEventListener("DOMContentLoaded", async () => {
   setSidebarOpen(config.ui.sidebarOpen);
   renderConnections(config.connections);
 
-  initConnectionWizard({
+  const wizard = initConnectionWizard({
     onConfigUpdated: (next) => {
       renderConnections(next.connections);
     },
     onDeleteConnection: removeConnectionAfterConfirm,
+  });
+
+  const editBtn = document.getElementById("edit-connection-btn");
+  editBtn?.addEventListener("click", () => {
+    if (selectedConnectionId && wizard?.openEditWizard) {
+      void wizard.openEditWizard(selectedConnectionId);
+    }
   });
 
   const removeBtn = document.getElementById("remove-connection-btn");
