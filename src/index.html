@@ -449,5 +449,47 @@
         </button>
       </div>
     </dialog>
+
+    <dialog
+      id="session-password-dialog"
+      class="w-[min(100vw-2rem,24rem)] select-none rounded-lg border border-stone-200/90 bg-[#fffcf7] p-0 text-stone-800 shadow-xl backdrop:bg-stone-900/40"
+    >
+      <form id="session-password-form" class="flex flex-col" autocomplete="off">
+        <div class="px-4 py-3">
+          <h2 class="text-sm font-semibold text-stone-900">Connect to database</h2>
+          <p id="session-password-description" class="mt-2 select-text text-sm text-stone-600"></p>
+          <label class="mt-3 block text-xs font-medium text-stone-600">
+            Password
+            <input
+              id="session-password-input"
+              name="sessionPassword"
+              type="password"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              class="mt-1 w-full select-text rounded border border-stone-200/90 bg-[#faf8f4] px-2 py-1.5 text-sm text-stone-900 outline-none ring-stone-400/30 focus:border-stone-400 focus:ring-2"
+            />
+          </label>
+          <p id="session-password-error" class="mt-2 hidden select-text text-xs text-red-700" role="alert"></p>
+        </div>
+        <div class="flex shrink-0 justify-end gap-2 border-t border-stone-200/80 px-4 py-3">
+          <button
+            type="button"
+            id="session-password-cancel"
+            class="rounded border border-stone-200/90 bg-[#f3efe6] px-3 py-1.5 text-xs font-medium text-stone-800 hover:bg-stone-200/90"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            id="session-password-submit"
+            class="rounded border border-amber-800/40 bg-amber-900/90 px-3 py-1.5 text-xs font-medium text-[#fffcf7] hover:bg-amber-950"
+          >
+            Connect
+          </button>
+        </div>
+      </form>
+    </dialog>
   </body>
 </html>

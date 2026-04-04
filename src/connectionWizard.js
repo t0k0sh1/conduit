@@ -244,7 +244,7 @@ export function initConnectionWizard({
     hideContextMenu();
     const id = contextMenuConnectionId;
     if (id && !isConnectionOpen(id)) {
-      onOpenConnection(id);
+      void Promise.resolve(onOpenConnection(id));
     }
   });
 

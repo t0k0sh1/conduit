@@ -42,3 +42,13 @@ cargo tauri build
 - ルートの `Cargo.toml` — ワークスペース定義
 
 フロントの依存関係に npm は含まれません。表示用マークアップとスタイルは `src/` に置いたまま、ロジックは Rust の `invoke` で足していく形が推奨です。
+
+## ローカル PostgreSQL（Docker Compose）
+
+```sh
+docker compose up -d
+```
+
+ルートの `compose.yaml` では `postgres-a` がホストの **15432**、`postgres-b` が **25432** にマッピングされています。ユーザー名・データベース名は `postgres`、パスワードは `postgres` です。接続プロファイルの例: Host `localhost`、Port `15432` または `25432`、Database `postgres`、User `postgres`、Password `postgres`。
+
+**Save password in profile** をオンにするとパスワードがプロファイルに保存されます。オフの場合は接続を開くときにパスワード入力ダイアログが表示され、その値はメモリにのみ保持されディスクには保存されません。

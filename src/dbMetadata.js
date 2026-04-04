@@ -7,6 +7,10 @@ const CACHE_TTL_MS = 60_000;
 /** @type {Map<string, { at: number, payload: unknown }>} */
 const cache = new Map();
 
+/** In-memory password when `savePasswordInProfile` is false (never persisted). */
+/** @type {Map<string, string>} */
+const sessionPasswordByConnectionId = new Map();
+
 function cacheKey(...parts) {
   return parts.join("::");
 }
@@ -20,15 +24,40 @@ export function hasTauriInvoke() {
 }
 
 /**
+ * @param {string} connectionId
+ * @param {string} password
+ */
+export function setSessionPassword(connectionId, password) {
+  sessionPasswordByConnectionId.set(connectionId, password);
+}
+
+/**
+ * @param {string} connectionId
+ */
+export function clearSessionPassword(connectionId) {
+  sessionPasswordByConnectionId.delete(connectionId);
+}
+
+/**
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ */
+export function shouldPromptForSessionPassword(profile) {
+  return !profile.savePasswordInProfile && !sessionPasswordByConnectionId.has(profile.id);
+}
+
+/**
  * @param {import("./appConfig.js").ConnectionProfile} profile
  */
 export function profileToParams(profile) {
+  const password = profile.savePasswordInProfile
+    ? profile.password
+    : (sessionPasswordByConnectionId.get(profile.id) ?? "");
   return {
     host: profile.host,
     port: profile.port,
     database: profile.database,
     user: profile.user,
-    password: profile.savePasswordInProfile ? profile.password : "",
+    password,
   };
 }
 

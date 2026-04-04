@@ -11,6 +11,9 @@ import {
   getCachedSystemSchemas,
   getCachedExtensions,
   getCachedRelations,
+  setSessionPassword,
+  clearSessionPassword,
+  shouldPromptForSessionPassword,
 } from "./dbMetadata.js";
 
 const SIDEBAR_OPEN = ["w-64", "opacity-100", "border-r"];
@@ -129,7 +132,7 @@ async function toggleTreePath(path, profile) {
       errorsByPath.delete(path);
       await ensureLoaded(path, profile);
     } catch (e) {
-      errorsByPath.set(path, e instanceof Error ? e.message : String(e));
+      errorsByPath.set(path, formatConnectionFailureMessage(e));
     } finally {
       loadingPaths.delete(path);
     }
@@ -400,10 +403,100 @@ function appendSchemaSubtree(ul, profile, schemaName, isSystem) {
 }
 
 /**
+ * @param {string} message
+ */
+function setStatusMessage(message) {
+  const status = document.getElementById("status-message");
+  if (status) status.textContent = message;
+}
+
+/**
+ * User-facing message when PostgreSQL metadata fetch / connection fails.
+ * @param {unknown} err
+ */
+function formatConnectionFailureMessage(err) {
+  const detail = err instanceof Error ? err.message : String(err);
+  const trimmed = detail.trim();
+  if (!trimmed) {
+    return "Could not connect to the database. The server did not return a specific reason.";
+  }
+  return `Could not connect to the database. Details: ${trimmed}`;
+}
+
+/**
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @returns {Promise<string | null>}
+ */
+function waitForSessionPassword(profile) {
+  const dialog = /** @type {HTMLDialogElement | null} */ (
+    document.getElementById("session-password-dialog")
+  );
+  const form = document.getElementById("session-password-form");
+  const desc = document.getElementById("session-password-description");
+  const input = /** @type {HTMLInputElement | null} */ (
+    document.getElementById("session-password-input")
+  );
+  const cancelBtn = document.getElementById("session-password-cancel");
+  if (!dialog || !form || !desc || !input || !cancelBtn) {
+    return Promise.resolve(null);
+  }
+  desc.textContent = `Enter password for "${profile.label || profile.id}". It is not stored on disk.`;
+  input.value = "";
+  dialog.showModal();
+  input.focus();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      form.removeEventListener("submit", onSubmit);
+      cancelBtn.removeEventListener("click", onCancel);
+      dialog.removeEventListener("cancel", onDialogCancel);
+      resolve(value);
+    };
+    /** @param {SubmitEvent} e */
+    const onSubmit = (e) => {
+      e.preventDefault();
+      finish(input.value);
+      dialog.close();
+    };
+    const onCancel = () => {
+      dialog.close();
+      finish(null);
+    };
+    const onDialogCancel = () => {
+      finish(null);
+    };
+    form.addEventListener("submit", onSubmit);
+    cancelBtn.addEventListener("click", onCancel);
+    dialog.addEventListener("cancel", onDialogCancel);
+  });
+}
+
+/**
  * @param {string} id
  */
-function openConnection(id) {
+async function openConnection(id) {
+  const profile = lastConnections.find((c) => c.id === id);
+  if (!profile) return;
+
+  if (shouldPromptForSessionPassword(profile)) {
+    const pw = await waitForSessionPassword(profile);
+    if (pw === null) return;
+    setSessionPassword(profile.id, pw);
+  }
+
+  pruneCacheForConnection(id);
+  try {
+    await fetchUserSchemas(profile);
+  } catch (e) {
+    setStatusMessage(formatConnectionFailureMessage(e));
+    clearSessionPassword(id);
+    return;
+  }
+
   openConnectionIds.add(id);
+  setStatusMessage("Ready");
   renderConnections(lastConnections);
 }
 
@@ -414,6 +507,7 @@ function closeConnection(id) {
   openConnectionIds.delete(id);
   pruneExpandedPathsForConnection(id);
   pruneCacheForConnection(id);
+  clearSessionPassword(id);
   renderConnections(lastConnections);
 }
 
@@ -455,6 +549,7 @@ function renderConnections(connections) {
       openConnectionIds.delete(id);
       pruneExpandedPathsForConnection(id);
       pruneCacheForConnection(id);
+      clearSessionPassword(id);
     }
   }
 
@@ -489,7 +584,7 @@ function renderConnections(connections) {
 
     row.addEventListener("dblclick", (e) => {
       e.stopPropagation();
-      openConnection(c.id);
+      void openConnection(c.id);
     });
 
     const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -588,6 +683,7 @@ async function removeConnectionAfterConfirm(id) {
     }
     pruneExpandedPathsForConnection(id);
     pruneCacheForConnection(id);
+    clearSessionPassword(id);
     renderConnections(next.connections);
   } catch (err) {
     const status = document.getElementById("status-message");
