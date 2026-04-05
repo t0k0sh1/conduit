@@ -116,6 +116,319 @@ let nextSqlQueryTabSeq = 1;
 const TABLE_PREVIEW_DEFAULT_LIMIT = 100;
 
 /**
+ * Table catalog metadata returned with `fetchTablePreview` (camelCase from Tauri).
+ * @typedef {{
+ *   statistics: null | {
+ *     relkind: string;
+ *     estimatedRowCount: number;
+ *     totalBytes: number;
+ *     heapBytes: number;
+ *     indexBytes: number;
+ *     heapStatsAvailable: boolean;
+ *     seqScan: number | null;
+ *     seqTupRead: number | null;
+ *     idxScan: number | null;
+ *     idxTupFetch: number | null;
+ *     nTupIns: number | null;
+ *     nTupUpd: number | null;
+ *     nTupDel: number | null;
+ *     nLiveTup: number | null;
+ *     nDeadTup: number | null;
+ *     lastVacuum: string | null;
+ *     lastAutovacuum: string | null;
+ *     lastAnalyze: string | null;
+ *     lastAutoanalyze: string | null;
+ *     vacuumCount: number | null;
+ *     autovacuumCount: number | null;
+ *     analyzeCount: number | null;
+ *     autoanalyzeCount: number | null;
+ *   };
+ *   primaryKey: null | { name: string; columns: string[] };
+ *   foreignKeys: Array<{
+ *     name: string;
+ *     columns: string[];
+ *     referencedSchema: string;
+ *     referencedTable: string;
+ *     referencedColumns: string[];
+ *   }>;
+ *   uniqueConstraints: Array<{ name: string; columns: string[] }>;
+ *   indexes: Array<{ name: string; definition: string }>;
+ * }} TablePreviewMetadata
+ */
+
+/**
+ * @returns {TablePreviewMetadata}
+ */
+function emptyTablePreviewMetadata() {
+  return {
+    statistics: null,
+    primaryKey: null,
+    foreignKeys: [],
+    uniqueConstraints: [],
+    indexes: [],
+  };
+}
+
+/**
+ * @param {TablePreviewMetadata} metadata
+ * @param {string} columnName
+ * @returns {("PK"|"FK"|"UK")[]}
+ */
+function columnTagsForTablePreview(metadata, columnName) {
+  /** @type {("PK"|"FK"|"UK")[]} */
+  const tags = [];
+  const pk = metadata.primaryKey;
+  if (pk?.columns?.includes(columnName)) tags.push("PK");
+  for (const fk of metadata.foreignKeys ?? []) {
+    if (fk.columns?.includes(columnName)) {
+      tags.push("FK");
+      break;
+    }
+  }
+  for (const u of metadata.uniqueConstraints ?? []) {
+    if (u.columns?.includes(columnName)) {
+      tags.push("UK");
+      break;
+    }
+  }
+  return tags;
+}
+
+/**
+ * @param {string[]} parts
+ * @returns {string}
+ */
+function formatIdentList(parts) {
+  return parts.join(", ");
+}
+
+/**
+ * @param {number} n
+ * @returns {string}
+ */
+function formatByteSize(n) {
+  if (n == null || n < 0) return "—";
+  if (n === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = n;
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u++;
+  }
+  const shown = u === 0 || v >= 10 ? Math.round(v) : Number(v.toFixed(1));
+  return `${shown} ${units[u]}`;
+}
+
+/**
+ * @param {string} kind
+ * @returns {string}
+ */
+function pgRelkindLabel(kind) {
+  const map = {
+    r: "Table",
+    p: "Partitioned table",
+    v: "View",
+    m: "Materialized view",
+    f: "Foreign table",
+    I: "Partitioned index",
+    t: "TOAST table",
+    c: "Composite type",
+  };
+  return map[kind] ?? `Other (${kind})`;
+}
+
+/**
+ * @param {number | null | undefined} n
+ * @returns {string}
+ */
+function formatNullableStatInt(n) {
+  if (n == null) return "—";
+  return String(n);
+}
+
+/**
+ * @param {string | null | undefined} t
+ * @returns {string}
+ */
+function formatNullableTimestamp(t) {
+  if (t == null || t === "") return "—";
+  return t;
+}
+
+/**
+ * @param {TablePreviewMetadata} metadata
+ * @param {HTMLElement} container
+ */
+function renderTablePreviewMetadataSection(metadata, container) {
+  container.className =
+    "min-h-0 flex-1 overflow-auto bg-[#faf8f4]/90 px-3 py-2 text-xs text-stone-700";
+
+  const sectionTitle = (label) => {
+    const el = document.createElement("div");
+    el.className =
+      "mt-2 first:mt-0 text-[11px] font-semibold uppercase tracking-wide text-stone-500";
+    el.textContent = label;
+    return el;
+  };
+
+  const bodyMuted = (text) => {
+    const el = document.createElement("div");
+    el.className = "font-mono text-[11px] text-stone-600";
+    el.textContent = text;
+    return el;
+  };
+
+  const none = () => {
+    const el = document.createElement("div");
+    el.className = "italic text-stone-400";
+    el.textContent = "None";
+    return el;
+  };
+
+  container.appendChild(sectionTitle("Primary key"));
+  if (metadata.primaryKey) {
+    const pk = metadata.primaryKey;
+    container.appendChild(
+      bodyMuted(
+        `${pk.name} (${formatIdentList(pk.columns)})`,
+      ),
+    );
+  } else {
+    container.appendChild(none());
+  }
+
+  container.appendChild(sectionTitle("Foreign keys"));
+  const fks = metadata.foreignKeys ?? [];
+  if (fks.length === 0) {
+    container.appendChild(none());
+  } else {
+    for (const fk of fks) {
+      const line = `${fk.name}: (${formatIdentList(fk.columns)}) REFERENCES ${fk.referencedSchema}.${fk.referencedTable} (${formatIdentList(fk.referencedColumns)})`;
+      container.appendChild(bodyMuted(line));
+    }
+  }
+
+  container.appendChild(sectionTitle("Unique constraints"));
+  const uniqs = metadata.uniqueConstraints ?? [];
+  if (uniqs.length === 0) {
+    container.appendChild(none());
+  } else {
+    for (const u of uniqs) {
+      container.appendChild(
+        bodyMuted(`${u.name} (${formatIdentList(u.columns)})`),
+      );
+    }
+  }
+
+  container.appendChild(sectionTitle("Indexes"));
+  const idxs = metadata.indexes ?? [];
+  if (idxs.length === 0) {
+    container.appendChild(none());
+  } else {
+    for (const ix of idxs) {
+      const wrap = document.createElement("div");
+      wrap.className = "mb-1.5 last:mb-0";
+      const nameEl = document.createElement("div");
+      nameEl.className = "font-mono text-[11px] font-medium text-stone-700";
+      nameEl.textContent = ix.name;
+      const defEl = document.createElement("pre");
+      defEl.className =
+        "mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-snug text-stone-600";
+      defEl.textContent = ix.definition;
+      wrap.appendChild(nameEl);
+      wrap.appendChild(defEl);
+      container.appendChild(wrap);
+    }
+  }
+}
+
+/**
+ * @param {TablePreviewMetadata["statistics"]} statistics
+ * @param {HTMLElement} container
+ */
+function renderTablePreviewStatisticsSection(statistics, container) {
+  container.className =
+    "min-h-0 flex-1 overflow-auto bg-[#faf8f4]/90 px-3 py-2 text-xs text-stone-700";
+  if (!statistics) {
+    const empty = document.createElement("div");
+    empty.className = "italic text-stone-400";
+    empty.textContent = "No statistics available.";
+    container.appendChild(empty);
+    return;
+  }
+  const st = statistics;
+  const statBlock = document.createElement("div");
+  statBlock.className = "space-y-1 font-mono text-[11px] text-stone-600";
+  const lines = [
+    `Relation kind: ${pgRelkindLabel(st.relkind)}`,
+    `Estimated rows (planner): ${
+      st.estimatedRowCount < 0
+        ? "Unknown (run ANALYZE)"
+        : String(st.estimatedRowCount)
+    }`,
+    `Total size: ${formatByteSize(st.totalBytes)}`,
+    `Heap size: ${formatByteSize(st.heapBytes)}`,
+    `Indexes size: ${formatByteSize(st.indexBytes)}`,
+  ];
+  for (const line of lines) {
+    const row = document.createElement("div");
+    row.textContent = line;
+    statBlock.appendChild(row);
+  }
+  if (!st.heapStatsAvailable) {
+    const hint = document.createElement("div");
+    hint.className = "mt-2 italic text-stone-500";
+    hint.textContent =
+      "Heap activity statistics (scans, tuple counts, vacuum) are not tracked for this relation type (e.g. views).";
+    statBlock.appendChild(hint);
+  } else {
+    const activityTitle = document.createElement("div");
+    activityTitle.className =
+      "mt-3 text-[11px] font-semibold uppercase tracking-wide text-stone-500";
+    activityTitle.textContent = "Activity (since stats reset)";
+    statBlock.appendChild(activityTitle);
+    const actLines = [
+      `Sequential scans: ${formatNullableStatInt(st.seqScan)}`,
+      `Sequential tuples read: ${formatNullableStatInt(st.seqTupRead)}`,
+      `Index scans: ${formatNullableStatInt(st.idxScan)}`,
+      `Index tuples fetched: ${formatNullableStatInt(st.idxTupFetch)}`,
+      `Inserts: ${formatNullableStatInt(st.nTupIns)}`,
+      `Updates: ${formatNullableStatInt(st.nTupUpd)}`,
+      `Deletes: ${formatNullableStatInt(st.nTupDel)}`,
+      `Live tuples (estimate): ${formatNullableStatInt(st.nLiveTup)}`,
+      `Dead tuples (estimate): ${formatNullableStatInt(st.nDeadTup)}`,
+    ];
+    for (const line of actLines) {
+      const row = document.createElement("div");
+      row.textContent = line;
+      statBlock.appendChild(row);
+    }
+    const maintTitle = document.createElement("div");
+    maintTitle.className =
+      "mt-3 text-[11px] font-semibold uppercase tracking-wide text-stone-500";
+    maintTitle.textContent = "Maintenance";
+    statBlock.appendChild(maintTitle);
+    const maintLines = [
+      `Last vacuum: ${formatNullableTimestamp(st.lastVacuum)}`,
+      `Last autovacuum: ${formatNullableTimestamp(st.lastAutovacuum)}`,
+      `Last analyze: ${formatNullableTimestamp(st.lastAnalyze)}`,
+      `Last autoanalyze: ${formatNullableTimestamp(st.lastAutoanalyze)}`,
+      `Vacuum count: ${formatNullableStatInt(st.vacuumCount)}`,
+      `Autovacuum count: ${formatNullableStatInt(st.autovacuumCount)}`,
+      `Analyze count: ${formatNullableStatInt(st.analyzeCount)}`,
+      `Autoanalyze count: ${formatNullableStatInt(st.autoanalyzeCount)}`,
+    ];
+    for (const line of maintLines) {
+      const row = document.createElement("div");
+      row.textContent = line;
+      statBlock.appendChild(row);
+    }
+  }
+  container.appendChild(statBlock);
+}
+
+/**
  * PostgreSQL double-quoted identifier (escape embedded quotes).
  * @param {string} ident
  */
@@ -1714,16 +2027,186 @@ async function runSqlQueryForTab(tabId) {
 /**
  * @param {HTMLElement} bodyEl
  * @param {HTMLElement} metaEl
- * @param {{ columns: string[]; rows: unknown[] }} data
+ * @param {{ columns: string[]; rows: unknown[]; metadata?: TablePreviewMetadata }} data
+ * @param {string} previewTabId
  */
-function renderTablePreviewTable(bodyEl, metaEl, data) {
+function renderTablePreviewTable(bodyEl, metaEl, data, previewTabId) {
+  const metadata = data.metadata ?? emptyTablePreviewMetadata();
   if (metaEl) {
     metaEl.textContent = `${data.rows.length} rows (limit ${TABLE_PREVIEW_DEFAULT_LIMIT})`;
   }
   if (!bodyEl) return;
 
-  bodyEl.className = "min-h-0 flex-1 overflow-auto p-0 select-text";
+  bodyEl.className =
+    "flex min-h-0 flex-1 flex-col overflow-hidden p-0 select-text";
   bodyEl.replaceChildren();
+
+  const ids = {
+    dataTab: `table-preview-${previewTabId}-subtab-data`,
+    metaTab: `table-preview-${previewTabId}-subtab-metadata`,
+    statsTab: `table-preview-${previewTabId}-subtab-statistics`,
+    dataPanel: `table-preview-${previewTabId}-subpanel-data`,
+    metaPanel: `table-preview-${previewTabId}-subpanel-metadata`,
+    statsPanel: `table-preview-${previewTabId}-subpanel-statistics`,
+  };
+
+  const tabBar = document.createElement("div");
+  tabBar.setAttribute("role", "tablist");
+  tabBar.setAttribute("aria-label", "Table preview view");
+  tabBar.className =
+    "flex shrink-0 gap-0.5 border-b border-stone-200/90 bg-[#fffcf7]/90 px-2 pt-1";
+
+  const tabActiveClass =
+    "cursor-pointer shrink-0 rounded-t border border-b-0 border-stone-200/90 bg-[#fffcf7] px-2.5 py-1 text-xs font-medium text-stone-800 outline-none focus-visible:ring-2 focus-visible:ring-stone-400/60";
+  const tabInactiveClass =
+    "cursor-pointer shrink-0 rounded-t border border-b-0 border-transparent px-2.5 py-1 text-xs font-medium text-stone-500 outline-none hover:bg-stone-200/50 hover:text-stone-800 focus-visible:ring-2 focus-visible:ring-stone-400/60";
+
+  const dataTabBtn = document.createElement("button");
+  dataTabBtn.type = "button";
+  dataTabBtn.id = ids.dataTab;
+  dataTabBtn.setAttribute("role", "tab");
+  dataTabBtn.setAttribute("aria-selected", "true");
+  dataTabBtn.setAttribute("aria-controls", ids.dataPanel);
+  dataTabBtn.textContent = "Data";
+  dataTabBtn.className = tabActiveClass;
+  dataTabBtn.title = "Table rows";
+
+  const metaTabBtn = document.createElement("button");
+  metaTabBtn.type = "button";
+  metaTabBtn.id = ids.metaTab;
+  metaTabBtn.setAttribute("role", "tab");
+  metaTabBtn.setAttribute("aria-selected", "false");
+  metaTabBtn.setAttribute("aria-controls", ids.metaPanel);
+  metaTabBtn.textContent = "Metadata";
+  metaTabBtn.className = tabInactiveClass;
+  metaTabBtn.title =
+    "Primary key, foreign keys, unique constraints, indexes";
+
+  const statsTabBtn = document.createElement("button");
+  statsTabBtn.type = "button";
+  statsTabBtn.id = ids.statsTab;
+  statsTabBtn.setAttribute("role", "tab");
+  statsTabBtn.setAttribute("aria-selected", "false");
+  statsTabBtn.setAttribute("aria-controls", ids.statsPanel);
+  statsTabBtn.textContent = "Statistics";
+  statsTabBtn.className = tabInactiveClass;
+  statsTabBtn.title =
+    "Sizes, planner estimate, activity, vacuum and analyze history";
+
+  tabBar.appendChild(dataTabBtn);
+  tabBar.appendChild(metaTabBtn);
+  tabBar.appendChild(statsTabBtn);
+
+  const contentWrap = document.createElement("div");
+  contentWrap.className = "flex min-h-0 flex-1 flex-col overflow-hidden";
+
+  /** Tailwind `flex` overrides the HTML `hidden` attribute’s display; use `hidden` class to toggle. */
+  const panelVisibleClass = "flex min-h-0 flex-1 flex-col overflow-hidden";
+  const panelHiddenClass = "hidden";
+
+  const dataPanel = document.createElement("div");
+  dataPanel.id = ids.dataPanel;
+  dataPanel.setAttribute("role", "tabpanel");
+  dataPanel.setAttribute("aria-labelledby", ids.dataTab);
+  dataPanel.className = panelVisibleClass;
+
+  const metaPanel = document.createElement("div");
+  metaPanel.id = ids.metaPanel;
+  metaPanel.setAttribute("role", "tabpanel");
+  metaPanel.setAttribute("aria-labelledby", ids.metaTab);
+  metaPanel.className = panelHiddenClass;
+  metaPanel.setAttribute("aria-hidden", "true");
+
+  const statsPanel = document.createElement("div");
+  statsPanel.id = ids.statsPanel;
+  statsPanel.setAttribute("role", "tabpanel");
+  statsPanel.setAttribute("aria-labelledby", ids.statsTab);
+  statsPanel.className = panelHiddenClass;
+  statsPanel.setAttribute("aria-hidden", "true");
+
+  /**
+   * @param {"data" | "metadata" | "statistics"} which
+   */
+  function applySubTab(which) {
+    dataTabBtn.setAttribute(
+      "aria-selected",
+      which === "data" ? "true" : "false",
+    );
+    metaTabBtn.setAttribute(
+      "aria-selected",
+      which === "metadata" ? "true" : "false",
+    );
+    statsTabBtn.setAttribute(
+      "aria-selected",
+      which === "statistics" ? "true" : "false",
+    );
+    dataTabBtn.className =
+      which === "data" ? tabActiveClass : tabInactiveClass;
+    metaTabBtn.className =
+      which === "metadata" ? tabActiveClass : tabInactiveClass;
+    statsTabBtn.className =
+      which === "statistics" ? tabActiveClass : tabInactiveClass;
+    dataPanel.className =
+      which === "data" ? panelVisibleClass : panelHiddenClass;
+    metaPanel.className =
+      which === "metadata" ? panelVisibleClass : panelHiddenClass;
+    statsPanel.className =
+      which === "statistics" ? panelVisibleClass : panelHiddenClass;
+    dataPanel.setAttribute(
+      "aria-hidden",
+      which === "data" ? "false" : "true",
+    );
+    metaPanel.setAttribute(
+      "aria-hidden",
+      which === "metadata" ? "false" : "true",
+    );
+    statsPanel.setAttribute(
+      "aria-hidden",
+      which === "statistics" ? "false" : "true",
+    );
+  }
+
+  dataTabBtn.addEventListener("click", () => applySubTab("data"));
+  metaTabBtn.addEventListener("click", () => applySubTab("metadata"));
+  statsTabBtn.addEventListener("click", () => applySubTab("statistics"));
+  dataTabBtn.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      applySubTab("metadata");
+      metaTabBtn.focus();
+    }
+  });
+  metaTabBtn.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      applySubTab("data");
+      dataTabBtn.focus();
+    }
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      applySubTab("statistics");
+      statsTabBtn.focus();
+    }
+  });
+  statsTabBtn.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      applySubTab("metadata");
+      metaTabBtn.focus();
+    }
+  });
+
+  const tableScroll = document.createElement("div");
+  tableScroll.className = "min-h-0 flex-1 overflow-auto";
+  dataPanel.appendChild(tableScroll);
+
+  const metaSection = document.createElement("div");
+  renderTablePreviewMetadataSection(metadata, metaSection);
+  metaPanel.appendChild(metaSection);
+
+  const statsSection = document.createElement("div");
+  renderTablePreviewStatisticsSection(metadata.statistics, statsSection);
+  statsPanel.appendChild(statsSection);
 
   const table = document.createElement("table");
   table.className =
@@ -1731,12 +2214,37 @@ function renderTablePreviewTable(bodyEl, metaEl, data) {
 
   const thead = document.createElement("thead");
   const trh = document.createElement("tr");
+  const badgeClass = {
+    PK: "rounded bg-amber-100 px-1 py-0.5 font-mono text-[10px] text-amber-900",
+    FK: "rounded bg-sky-100 px-1 py-0.5 font-mono text-[10px] text-sky-900",
+    UK: "rounded bg-violet-100 px-1 py-0.5 font-mono text-[10px] text-violet-900",
+  };
+  const tagTitles = {
+    PK: "Primary key column",
+    FK: "Foreign key column",
+    UK: "Unique constraint column",
+  };
   for (const col of data.columns) {
     const th = document.createElement("th");
     th.scope = "col";
     th.className =
-      "sticky top-0 border-b border-stone-200/90 bg-[#fffcf7] px-2 py-2 font-medium text-stone-700";
-    th.textContent = col;
+      "sticky top-0 border-b border-stone-200/90 bg-[#fffcf7] px-2 py-2 align-top font-medium text-stone-700";
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = col;
+    th.appendChild(nameSpan);
+    const tags = columnTagsForTablePreview(metadata, col);
+    if (tags.length > 0) {
+      const badgeRow = document.createElement("span");
+      badgeRow.className = "mt-1 flex flex-wrap gap-0.5";
+      for (const tag of tags) {
+        const b = document.createElement("span");
+        b.className = badgeClass[tag];
+        b.textContent = tag;
+        b.title = tagTitles[tag];
+        badgeRow.appendChild(b);
+      }
+      th.appendChild(badgeRow);
+    }
     trh.appendChild(th);
   }
   thead.appendChild(trh);
@@ -1768,7 +2276,13 @@ function renderTablePreviewTable(bodyEl, metaEl, data) {
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
-  bodyEl.appendChild(table);
+  tableScroll.appendChild(table);
+
+  bodyEl.appendChild(tabBar);
+  bodyEl.appendChild(contentWrap);
+  contentWrap.appendChild(dataPanel);
+  contentWrap.appendChild(metaPanel);
+  contentWrap.appendChild(statsPanel);
 }
 
 /**
@@ -1794,7 +2308,7 @@ async function loadTablePreview(tabId, profile, schemaName, tableName) {
     });
     const still = tablePreviewTabs.find((t) => t.id === tabId);
     if (!still) return;
-    renderTablePreviewTable(still.bodyEl, still.metaEl, data);
+    renderTablePreviewTable(still.bodyEl, still.metaEl, data, still.id);
     setStatusMessage("Ready");
   } catch (e) {
     const still = tablePreviewTabs.find((t) => t.id === tabId);

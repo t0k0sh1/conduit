@@ -1,8 +1,10 @@
 //! PostgreSQL catalog queries for the object tree (lazy-loaded from the frontend).
 
 use serde::{Deserialize, Serialize};
+use std::collections::btree_map::Entry;
+use std::collections::BTreeMap;
 use tokio_postgres::error::{DbError, ErrorPosition};
-use tokio_postgres::{Error as PgError, NoTls, SimpleQueryMessage};
+use tokio_postgres::{Client, Error as PgError, NoTls, SimpleQueryMessage};
 
 pub const MAX_SQL_TEXT_BYTES: usize = 1_048_576;
 
@@ -42,12 +44,91 @@ fn quote_ident(s: &str) -> String {
 const TABLE_PREVIEW_DEFAULT_LIMIT: u32 = 100;
 const TABLE_PREVIEW_MAX_LIMIT: u32 = 1000;
 
+/// Primary key constraint on a relation (from `pg_catalog` / `information_schema`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrimaryKeyInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+}
+
+/// Foreign key constraint referencing another table.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignKeyInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub referenced_schema: String,
+    pub referenced_table: String,
+    pub referenced_columns: Vec<String>,
+}
+
+/// Unique constraint (`UNIQUE` on columns).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UniqueConstraintInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+}
+
+/// Index on the relation (`pg_indexes.indexdef`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexInfo {
+    pub name: String,
+    pub definition: String,
+}
+
+/// Planner estimate and `pg_stat_all_tables` activity (heap relations only; views omit heap stats).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableStatistics {
+    /// `pg_class.relkind` single-char code (`r`, `v`, `m`, …).
+    pub relkind: String,
+    /// `pg_class.reltuples` rounded; `-1` means unknown until `ANALYZE`.
+    pub estimated_row_count: i64,
+    pub total_bytes: i64,
+    pub heap_bytes: i64,
+    pub index_bytes: i64,
+    /// `true` when a `pg_stat_all_tables` row exists (base tables, matviews, etc.; `false` for views).
+    pub heap_stats_available: bool,
+    pub seq_scan: Option<i64>,
+    pub seq_tup_read: Option<i64>,
+    pub idx_scan: Option<i64>,
+    pub idx_tup_fetch: Option<i64>,
+    pub n_tup_ins: Option<i64>,
+    pub n_tup_upd: Option<i64>,
+    pub n_tup_del: Option<i64>,
+    pub n_live_tup: Option<i64>,
+    pub n_dead_tup: Option<i64>,
+    pub last_vacuum: Option<String>,
+    pub last_autovacuum: Option<String>,
+    pub last_analyze: Option<String>,
+    pub last_autoanalyze: Option<String>,
+    pub vacuum_count: Option<i64>,
+    pub autovacuum_count: Option<i64>,
+    pub analyze_count: Option<i64>,
+    pub autoanalyze_count: Option<i64>,
+}
+
+/// PK, FK, unique constraints, and indexes for the table preview panel.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableMetadata {
+    pub statistics: TableStatistics,
+    pub primary_key: Option<PrimaryKeyInfo>,
+    pub foreign_keys: Vec<ForeignKeyInfo>,
+    pub unique_constraints: Vec<UniqueConstraintInfo>,
+    pub indexes: Vec<IndexInfo>,
+}
+
 /// Read-only row preview for a table, view, or materialized view (`SELECT * ... LIMIT`).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TablePreview {
     pub columns: Vec<String>,
     pub rows: Vec<serde_json::Value>,
+    pub metadata: TableMetadata,
 }
 
 /// Outcome of one statement in a `simple_query` batch (multiple statements separated by `;`).
@@ -219,6 +300,243 @@ pub async fn execute_sql(params: PgConnectionParams, sql: String) -> Result<SqlE
     Ok(SqlExecutionResult { statements })
 }
 
+async fn fetch_primary_key_info(
+    client: &Client,
+    schema: &str,
+    table: &str,
+) -> Result<Option<PrimaryKeyInfo>, String> {
+    let rows = client
+        .query(
+            "SELECT tc.constraint_name, kcu.column_name, kcu.ordinal_position \
+             FROM information_schema.table_constraints tc \
+             JOIN information_schema.key_column_usage kcu \
+               ON tc.constraint_schema = kcu.constraint_schema \
+               AND tc.constraint_name = kcu.constraint_name \
+             WHERE tc.constraint_type = 'PRIMARY KEY' \
+               AND tc.table_schema = $1 \
+               AND tc.table_name = $2 \
+             ORDER BY kcu.ordinal_position",
+            &[&schema, &table],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let name: String = rows[0].get(0);
+    let columns: Vec<String> = rows.iter().map(|r| r.get::<_, String>(1)).collect();
+    Ok(Some(PrimaryKeyInfo { name, columns }))
+}
+
+async fn fetch_foreign_keys_info(
+    client: &Client,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<ForeignKeyInfo>, String> {
+    let rows = client
+        .query(
+            "SELECT tc.constraint_name, kcu.column_name, kcu.ordinal_position, \
+                    kcu2.table_schema AS foreign_table_schema, \
+                    kcu2.table_name AS foreign_table_name, \
+                    kcu2.column_name AS foreign_column_name \
+             FROM information_schema.table_constraints AS tc \
+             JOIN information_schema.key_column_usage AS kcu \
+               ON tc.constraint_schema = kcu.constraint_schema \
+               AND tc.constraint_name = kcu.constraint_name \
+             JOIN information_schema.referential_constraints AS rc \
+               ON tc.constraint_catalog = rc.constraint_catalog \
+               AND tc.constraint_schema = rc.constraint_schema \
+               AND tc.constraint_name = rc.constraint_name \
+             JOIN information_schema.key_column_usage AS kcu2 \
+               ON rc.unique_constraint_catalog = kcu2.constraint_catalog \
+               AND rc.unique_constraint_schema = kcu2.constraint_schema \
+               AND rc.unique_constraint_name = kcu2.constraint_name \
+               AND kcu.ordinal_position = kcu2.ordinal_position \
+             WHERE tc.constraint_type = 'FOREIGN KEY' \
+               AND tc.table_schema = $1 \
+               AND tc.table_name = $2 \
+             ORDER BY tc.constraint_name, kcu.ordinal_position",
+            &[&schema, &table],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    #[derive(Default)]
+    struct FkAccum {
+        referenced_schema: String,
+        referenced_table: String,
+        columns: Vec<String>,
+        referenced_columns: Vec<String>,
+    }
+
+    let mut map: BTreeMap<String, FkAccum> = BTreeMap::new();
+    for r in rows {
+        let name: String = r.get(0);
+        let fk_col: String = r.get(1);
+        let ref_schema: String = r.get(3);
+        let ref_table: String = r.get(4);
+        let ref_col: String = r.get(5);
+        match map.entry(name) {
+            Entry::Vacant(v) => {
+                v.insert(FkAccum {
+                    referenced_schema: ref_schema,
+                    referenced_table: ref_table,
+                    columns: vec![fk_col],
+                    referenced_columns: vec![ref_col],
+                });
+            }
+            Entry::Occupied(mut o) => {
+                o.get_mut().columns.push(fk_col);
+                o.get_mut().referenced_columns.push(ref_col);
+            }
+        }
+    }
+
+    Ok(map
+        .into_iter()
+        .map(|(name, acc)| ForeignKeyInfo {
+            name,
+            columns: acc.columns,
+            referenced_schema: acc.referenced_schema,
+            referenced_table: acc.referenced_table,
+            referenced_columns: acc.referenced_columns,
+        })
+        .collect())
+}
+
+async fn fetch_unique_constraints_info(
+    client: &Client,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<UniqueConstraintInfo>, String> {
+    let rows = client
+        .query(
+            "SELECT tc.constraint_name, kcu.column_name, kcu.ordinal_position \
+             FROM information_schema.table_constraints tc \
+             JOIN information_schema.key_column_usage kcu \
+               ON tc.constraint_schema = kcu.constraint_schema \
+               AND tc.constraint_name = kcu.constraint_name \
+             WHERE tc.constraint_type = 'UNIQUE' \
+               AND tc.table_schema = $1 \
+               AND tc.table_name = $2 \
+             ORDER BY tc.constraint_name, kcu.ordinal_position",
+            &[&schema, &table],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for r in rows {
+        let name: String = r.get(0);
+        let col: String = r.get(1);
+        map.entry(name).or_default().push(col);
+    }
+
+    Ok(map
+        .into_iter()
+        .map(|(name, columns)| UniqueConstraintInfo { name, columns })
+        .collect())
+}
+
+async fn fetch_indexes_info(
+    client: &Client,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<IndexInfo>, String> {
+    let rows = client
+        .query(
+            "SELECT indexname, indexdef FROM pg_indexes \
+             WHERE schemaname = $1 AND tablename = $2 \
+             ORDER BY indexname",
+            &[&schema, &table],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| IndexInfo {
+            name: r.get(0),
+            definition: r.get(1),
+        })
+        .collect())
+}
+
+async fn fetch_table_statistics(
+    client: &Client,
+    schema: &str,
+    table: &str,
+) -> Result<TableStatistics, String> {
+    let row = client
+        .query_one(
+            "SELECT \
+               c.relkind::text AS relkind, \
+               c.reltuples::bigint AS estimated_row_count, \
+               pg_total_relation_size(c.oid)::bigint AS total_bytes, \
+               pg_relation_size(c.oid)::bigint AS heap_bytes, \
+               COALESCE(pg_indexes_size(c.oid), 0)::bigint AS index_bytes, \
+               (s.relid IS NOT NULL) AS heap_stats_available, \
+               s.seq_scan, s.seq_tup_read, s.idx_scan, s.idx_tup_fetch, \
+               s.n_tup_ins, s.n_tup_upd, s.n_tup_del, s.n_live_tup, s.n_dead_tup, \
+               s.last_vacuum::text, s.last_autovacuum::text, s.last_analyze::text, \
+               s.last_autoanalyze::text, \
+               s.vacuum_count, s.autovacuum_count, s.analyze_count, s.autoanalyze_count \
+             FROM pg_catalog.pg_class c \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             LEFT JOIN pg_catalog.pg_stat_all_tables s ON s.relid = c.oid \
+             WHERE n.nspname = $1 AND c.relname = $2",
+            &[&schema, &table],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(TableStatistics {
+        relkind: row.get(0),
+        estimated_row_count: row.get(1),
+        total_bytes: row.get(2),
+        heap_bytes: row.get(3),
+        index_bytes: row.get(4),
+        heap_stats_available: row.get(5),
+        seq_scan: row.get(6),
+        seq_tup_read: row.get(7),
+        idx_scan: row.get(8),
+        idx_tup_fetch: row.get(9),
+        n_tup_ins: row.get(10),
+        n_tup_upd: row.get(11),
+        n_tup_del: row.get(12),
+        n_live_tup: row.get(13),
+        n_dead_tup: row.get(14),
+        last_vacuum: row.get(15),
+        last_autovacuum: row.get(16),
+        last_analyze: row.get(17),
+        last_autoanalyze: row.get(18),
+        vacuum_count: row.get(19),
+        autovacuum_count: row.get(20),
+        analyze_count: row.get(21),
+        autoanalyze_count: row.get(22),
+    })
+}
+
+async fn fetch_table_metadata(
+    client: &Client,
+    schema: &str,
+    table: &str,
+) -> Result<TableMetadata, String> {
+    let (statistics, primary_key, foreign_keys, unique_constraints, indexes) = tokio::try_join!(
+        fetch_table_statistics(client, schema, table),
+        fetch_primary_key_info(client, schema, table),
+        fetch_foreign_keys_info(client, schema, table),
+        fetch_unique_constraints_info(client, schema, table),
+        fetch_indexes_info(client, schema, table),
+    )?;
+    Ok(TableMetadata {
+        statistics,
+        primary_key,
+        foreign_keys,
+        unique_constraints,
+        indexes,
+    })
+}
+
 pub async fn fetch_table_preview(
     params: PgConnectionParams,
     schema: String,
@@ -232,41 +550,54 @@ pub async fn fetch_table_preview(
 
     let client = connect(&params).await?;
 
-    // `information_schema.columns` omits materialized views in PostgreSQL, so column
-    // metadata would be empty and the UI would show a row count with no cells.
-    let col_rows = client
-        .query(
-            "SELECT a.attname::text AS column_name \
-             FROM pg_catalog.pg_attribute a \
-             JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
-             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-             WHERE n.nspname = $1 AND c.relname = $2 \
-               AND a.attnum > 0 AND NOT a.attisdropped \
-             ORDER BY a.attnum",
-            &[&schema, &table],
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    let columns: Vec<String> = col_rows
-        .into_iter()
-        .map(|r| r.get::<_, String>(0))
-        .collect();
-
     let fq = format!(
         "SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json)::text \
          FROM (SELECT * FROM {}.{} LIMIT $1) t",
         quote_ident(&schema),
         quote_ident(&table)
     );
-    let data_row = client
-        .query_one(&fq, &[&lim_i64])
-        .await
-        .map_err(|e| e.to_string())?;
+
+    // `information_schema.columns` omits materialized views in PostgreSQL, so column
+    // metadata would be empty and the UI would show a row count with no cells.
+    let (col_rows, metadata, data_row) = tokio::try_join!(
+        async {
+            client
+                .query(
+                    "SELECT a.attname::text AS column_name \
+                     FROM pg_catalog.pg_attribute a \
+                     JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+                     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE n.nspname = $1 AND c.relname = $2 \
+                       AND a.attnum > 0 AND NOT a.attisdropped \
+                     ORDER BY a.attnum",
+                    &[&schema, &table],
+                )
+                .await
+                .map_err(|e| e.to_string())
+        },
+        fetch_table_metadata(&client, &schema, &table),
+        async {
+            client
+                .query_one(&fq, &[&lim_i64])
+                .await
+                .map_err(|e| e.to_string())
+        },
+    )?;
+
+    let columns: Vec<String> = col_rows
+        .into_iter()
+        .map(|r| r.get::<_, String>(0))
+        .collect();
+
     let json_text: String = data_row.get(0);
     let rows: Vec<serde_json::Value> =
         serde_json::from_str(&json_text).map_err(|e| e.to_string())?;
 
-    Ok(TablePreview { columns, rows })
+    Ok(TablePreview {
+        columns,
+        rows,
+        metadata,
+    })
 }
 
 /// Opens a connection and runs `SELECT 1` to verify authentication and database access.

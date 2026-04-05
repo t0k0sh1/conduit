@@ -254,7 +254,23 @@ export async function fetchRelationObjects(profile, schema, kind) {
  * @param {string} schema
  * @param {string} table
  * @param {{ limit?: number }} [options]
- * @returns {Promise<{ columns: string[]; rows: unknown[] }>}
+ * @returns {Promise<{
+ *   columns: string[];
+ *   rows: unknown[];
+ *   metadata: {
+ *     statistics: null | Record<string, unknown>;
+ *     primaryKey: null | { name: string; columns: string[] };
+ *     foreignKeys: Array<{
+ *       name: string;
+ *       columns: string[];
+ *       referencedSchema: string;
+ *       referencedTable: string;
+ *       referencedColumns: string[];
+ *     }>;
+ *     uniqueConstraints: Array<{ name: string; columns: string[] }>;
+ *     indexes: Array<{ name: string; definition: string }>;
+ *   };
+ * }>}
  */
 export async function fetchTablePreview(profile, schema, table, options = {}) {
   const invoke = getInvoke();
