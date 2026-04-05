@@ -20,6 +20,7 @@ import {
   clearSessionPassword,
   shouldPromptForSessionPassword,
 } from "./dbMetadata.js";
+import { formatSql } from "./sqlFormat.js";
 
 const SIDEBAR_DEFAULT_WIDTH_PX = 256;
 const SIDEBAR_MIN_WIDTH_PX = 160;
@@ -93,6 +94,7 @@ let nextTablePreviewTabSeq = 1;
  *   panelEl: HTMLElement;
  *   textareaEl: HTMLTextAreaElement;
  *   runBtn: HTMLButtonElement;
+ *   formatBtn: HTMLButtonElement;
  *   resultMetaEl: HTMLElement;
  *   resultBodyEl: HTMLElement;
  * }} SqlQueryTab
@@ -451,7 +453,18 @@ function createSqlQueryPanelElements(tabId) {
     "Run SQL: selected text if highlighted, otherwise the whole editor (⌘ Enter or Ctrl+Enter)";
   runBtn.setAttribute("aria-label", "Run SQL");
 
+  const formatBtn = document.createElement("button");
+  formatBtn.type = "button";
+  formatBtn.id = `sql-editor-format-${tabId}`;
+  formatBtn.className =
+    "rounded border border-stone-300/90 bg-stone-100/90 px-2.5 py-1 text-xs font-medium text-stone-800 hover:bg-stone-200/90 disabled:cursor-not-allowed disabled:opacity-50";
+  formatBtn.textContent = "Format";
+  formatBtn.title =
+    "Format SQL: selected text if highlighted, otherwise the whole editor (Shift+Alt+F)";
+  formatBtn.setAttribute("aria-label", "Format SQL");
+
   toolbar.appendChild(runBtn);
+  toolbar.appendChild(formatBtn);
 
   const editorWrap = document.createElement("div");
   editorWrap.className = "flex min-h-0 flex-1 flex-col";
@@ -493,14 +506,23 @@ function createSqlQueryPanelElements(tabId) {
     void runSqlQueryForTab(tabId);
   });
 
-  textareaEl.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter") return;
-    if (!(e.metaKey || e.ctrlKey)) return;
-    e.preventDefault();
-    void runSqlQueryForTab(tabId);
+  formatBtn.addEventListener("click", () => {
+    void formatSqlForTab(tabId);
   });
 
-  return { panelEl, textareaEl, runBtn, resultMetaEl, resultBodyEl };
+  textareaEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      void runSqlQueryForTab(tabId);
+      return;
+    }
+    if (e.shiftKey && e.altKey && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      void formatSqlForTab(tabId);
+    }
+  });
+
+  return { panelEl, textareaEl, runBtn, formatBtn, resultMetaEl, resultBodyEl };
 }
 
 function syncTabPanelVisibility() {
@@ -1016,7 +1038,7 @@ function closeSqlQueryTab(tabId) {
  */
 function openNewSqlQueryTab(profile, opts) {
   const tabId = `sqlq-${nextSqlQueryTabSeq++}`;
-  const { panelEl, textareaEl, runBtn, resultMetaEl, resultBodyEl } =
+  const { panelEl, textareaEl, runBtn, formatBtn, resultMetaEl, resultBodyEl } =
     createSqlQueryPanelElements(tabId);
 
   const panelsRoot = document.getElementById("sql-editor-panels");
@@ -1033,6 +1055,7 @@ function openNewSqlQueryTab(profile, opts) {
     panelEl,
     textareaEl,
     runBtn,
+    formatBtn,
     resultMetaEl,
     resultBodyEl,
   };
@@ -1494,6 +1517,79 @@ function getSqlToRunFromEditor(el) {
     return value.slice(selectionStart, selectionEnd).trim();
   }
   return value.trim();
+}
+
+/**
+ * Text to format: selection if non-empty, otherwise the whole editor (same idea as Run).
+ * @param {HTMLTextAreaElement} el
+ * @returns {{ mode: 'selection' | 'all'; start: number; end: number; text: string }}
+ */
+function getSqlSegmentToFormat(el) {
+  const { selectionStart, selectionEnd, value } = el;
+  if (selectionStart !== selectionEnd) {
+    return {
+      mode: "selection",
+      start: selectionStart,
+      end: selectionEnd,
+      text: value.slice(selectionStart, selectionEnd),
+    };
+  }
+  return {
+    mode: "all",
+    start: 0,
+    end: value.length,
+    text: value,
+  };
+}
+
+/**
+ * @param {unknown} err
+ * @returns {string}
+ */
+function formatSqlFormatError(err) {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === "string") return err;
+  return "Could not format SQL.";
+}
+
+/**
+ * @param {string} tabId
+ */
+async function formatSqlForTab(tabId) {
+  const tab = sqlQueryTabs.find((t) => t.id === tabId);
+  if (!tab) return;
+  const el = tab.textareaEl;
+  const seg = getSqlSegmentToFormat(el);
+  if (!seg.text.trim()) {
+    setStatusMessage("Nothing to format.");
+    return;
+  }
+  tab.formatBtn.disabled = true;
+  tab.formatBtn.setAttribute("aria-busy", "true");
+  setStatusMessage("Formatting SQL…");
+  try {
+    const formatted = await formatSql(seg.text);
+    if (seg.mode === "selection") {
+      const before = el.value.slice(0, seg.start);
+      const after = el.value.slice(seg.end);
+      el.value = before + formatted + after;
+      const pos = seg.start + formatted.length;
+      el.setSelectionRange(pos, pos);
+    } else {
+      el.value = formatted;
+      const pos = formatted.length;
+      el.setSelectionRange(pos, pos);
+    }
+    setStatusMessage("Ready");
+  } catch (e) {
+    setStatusMessage(formatSqlFormatError(e));
+  } finally {
+    const still = sqlQueryTabs.find((t) => t.id === tabId);
+    if (still) {
+      still.formatBtn.disabled = false;
+      still.formatBtn.removeAttribute("aria-busy");
+    }
+  }
 }
 
 /**

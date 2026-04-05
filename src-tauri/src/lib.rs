@@ -4,6 +4,11 @@ mod db_metadata;
 use app_config::AppConfig;
 use db_metadata::PgConnectionParams;
 
+/// Reserved-looking tokens that are valid PostgreSQL identifiers and should keep their
+/// original spelling when formatting. `sqlformat` matches `ignore_case_convert` against
+/// the exact token text (e.g. `day` vs `Day`).
+const SQLFORMAT_KEEP_ORIGINAL_CASE: &[&str] = &["day", "Day", "DAY"];
+
 #[tauri::command]
 fn load_app_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
     app_config::load(&app)
@@ -62,6 +67,19 @@ async fn pg_execute_sql(
     db_metadata::execute_sql(params, sql).await
 }
 
+#[tauri::command]
+fn format_sql(sql: String) -> Result<String, String> {
+    if sql.len() > db_metadata::MAX_SQL_TEXT_BYTES {
+        return Err("SQL text is too large to format.".to_string());
+    }
+    let mut opts = sqlformat::FormatOptions::default();
+    opts.dialect = sqlformat::Dialect::PostgreSql;
+    opts.uppercase = Some(true);
+    opts.ignore_case_convert = Some(SQLFORMAT_KEEP_ORIGINAL_CASE.to_vec());
+    let formatted = sqlformat::format(&sql, &sqlformat::QueryParams::None, &opts);
+    Ok(formatted)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -76,6 +94,7 @@ pub fn run() {
             pg_test_connection,
             pg_fetch_table_preview,
             pg_execute_sql,
+            format_sql,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

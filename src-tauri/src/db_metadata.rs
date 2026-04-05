@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tokio_postgres::error::{DbError, ErrorPosition};
 use tokio_postgres::{Error as PgError, NoTls, SimpleQueryMessage};
 
-const MAX_SQL_TEXT_BYTES: usize = 1_048_576;
+pub const MAX_SQL_TEXT_BYTES: usize = 1_048_576;
 
 /// Connection fields required to open a session (matches JS `ConnectionProfile` subset).
 #[derive(Debug, Clone, Serialize, Deserialize)]
