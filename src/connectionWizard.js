@@ -8,6 +8,7 @@ import { getSessionPassword, testPgConnection } from "./dbMetadata.js";
  *   isConnectionOpen?: (id: string) => boolean;
  *   onOpenConnection?: (id: string) => void;
  *   onCloseConnection?: (id: string) => void;
+ *   onNewQueryFromConnection?: (connectionId: string) => void;
  * }} options
  */
 export function initConnectionWizard({
@@ -16,6 +17,7 @@ export function initConnectionWizard({
   isConnectionOpen = () => false,
   onOpenConnection = () => {},
   onCloseConnection = () => {},
+  onNewQueryFromConnection,
 }) {
   const dialog = /** @type {HTMLDialogElement | null} */ (document.getElementById("connection-wizard-dialog"));
   const form = document.getElementById("connection-wizard-form");
@@ -47,6 +49,9 @@ export function initConnectionWizard({
   const contextClose = /** @type {HTMLButtonElement | null} */ (
     document.getElementById("context-close-connection")
   );
+  const contextNewQuery = /** @type {HTMLButtonElement | null} */ (
+    document.getElementById("context-connection-new-query")
+  );
   const treeNav = document.getElementById("connection-tree-nav");
 
   if (
@@ -66,6 +71,7 @@ export function initConnectionWizard({
     !contextAdd ||
     !contextOpen ||
     !contextClose ||
+    !contextNewQuery ||
     !contextEdit ||
     !contextDelete
   ) {
@@ -274,17 +280,27 @@ export function initConnectionWizard({
   /** Ignore left-button down / click right after opening (WebKit etc. can synthesize events). */
   let ignoreClosePointerUntil = 0;
 
+  /**
+   * `contextmenu` target can be a `Text` node; `closest` only exists on `Element`.
+   * @param {MouseEvent} ev
+   */
+  function eventTargetElement(ev) {
+    const t = ev.target;
+    if (t instanceof Element) return t;
+    if (t instanceof Text && t.parentElement) return t.parentElement;
+    return null;
+  }
+
   function showContextMenu(e) {
     e.preventDefault();
-    const t = e.target;
-    const row =
-      t instanceof Element ? t.closest("[data-connection-id]") : null;
+    const row = eventTargetElement(e)?.closest("[data-connection-id]");
     contextMenuConnectionId = row?.dataset.connectionId ?? null;
     const hasRow = contextMenuConnectionId != null;
     const id = contextMenuConnectionId;
     const open = id != null && isConnectionOpen(id);
     contextOpen.disabled = !hasRow || open;
     contextClose.disabled = !hasRow || !open;
+    contextNewQuery.disabled = !hasRow || !open;
     contextEdit.disabled = !hasRow;
     contextDelete.disabled = !hasRow;
     menu.classList.remove("hidden");
@@ -317,6 +333,14 @@ export function initConnectionWizard({
     const id = contextMenuConnectionId;
     if (id && isConnectionOpen(id)) {
       onCloseConnection(id);
+    }
+  });
+
+  contextNewQuery.addEventListener("click", () => {
+    hideContextMenu();
+    const id = contextMenuConnectionId;
+    if (id && isConnectionOpen(id) && onNewQueryFromConnection) {
+      onNewQueryFromConnection(id);
     }
   });
 

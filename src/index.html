@@ -36,8 +36,10 @@
         <span class="mx-1 h-5 w-px shrink-0 bg-stone-300/90" aria-hidden="true"></span>
         <button
           type="button"
+          id="new-query-btn"
           class="rounded p-1.5 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900"
           title="New query"
+          aria-label="New query"
         >
           <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path
@@ -218,6 +220,23 @@
 
         <main class="flex min-h-0 min-w-0 flex-1 flex-col bg-[#faf8f4]">
           <div
+            id="sql-editor-area"
+            class="hidden flex min-h-0 min-w-0 flex-1 flex-col border-b border-stone-200/90"
+          >
+            <div
+              id="sql-editor-tabs"
+              role="tablist"
+              aria-label="SQL queries"
+              class="flex shrink-0 min-h-0 select-none items-center gap-1 overflow-x-auto border-b border-stone-200/90 bg-[#f3efe6]/80 px-2 py-1"
+            ></div>
+            <div class="min-h-0 flex-1 p-3">
+              <div
+                id="sql-editor-panels"
+                class="flex h-full min-h-[8rem] flex-col"
+              ></div>
+            </div>
+          </div>
+          <div
             id="table-preview-area"
             class="hidden flex min-h-0 min-w-0 flex-1 flex-col"
           >
@@ -283,6 +302,15 @@
         class="w-full px-3 py-1.5 text-left hover:bg-stone-200/90 disabled:cursor-default disabled:text-stone-400 disabled:hover:bg-transparent"
       >
         Close database
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        id="context-connection-new-query"
+        disabled
+        class="w-full px-3 py-1.5 text-left hover:bg-stone-200/90 disabled:cursor-default disabled:text-stone-400 disabled:hover:bg-transparent"
+      >
+        New query
       </button>
       <div role="separator" class="my-1 border-t border-stone-200/90"></div>
       <button
@@ -357,6 +385,14 @@
         class="w-full px-3 py-1.5 text-left hover:bg-stone-200/90 disabled:cursor-default disabled:text-stone-400 disabled:hover:bg-transparent"
       >
         Open
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        id="context-table-new-query"
+        class="w-full px-3 py-1.5 text-left hover:bg-stone-200/90 disabled:cursor-default disabled:text-stone-400 disabled:hover:bg-transparent"
+      >
+        New query
       </button>
     </div>
 

@@ -25,6 +25,19 @@ const SIDEBAR_MAX_WIDTH_PX = 560;
 const SIDEBAR_OPEN = ["opacity-100", "border-r"];
 const SIDEBAR_CLOSED = ["w-0", "opacity-0", "border-r-0", "pointer-events-none"];
 
+/**
+ * `contextmenu` / `click` targets can be a `Text` node inside a button or label.
+ * Use this before `Element#closest` so we resolve the interactive ancestor.
+ * @param {Event} ev
+ * @returns {Element | null}
+ */
+function eventTargetElement(ev) {
+  const t = ev.target;
+  if (t instanceof Element) return t;
+  if (t instanceof Text && t.parentElement) return t.parentElement;
+  return null;
+}
+
 /** @type {number} */
 let sidebarWidthPx = SIDEBAR_DEFAULT_WIDTH_PX;
 
@@ -69,7 +82,42 @@ let activeTablePreviewTabId = null;
 
 let nextTablePreviewTabSeq = 1;
 
+/**
+ * @typedef {{
+ *   id: string;
+ *   connectionId: string;
+ *   tabLabel: string;
+ *   panelEl: HTMLElement;
+ *   textareaEl: HTMLTextAreaElement;
+ * }} SqlQueryTab
+ */
+
+/** @type {SqlQueryTab[]} */
+let sqlQueryTabs = [];
+
+/** @type {string | null} */
+let activeSqlQueryTabId = null;
+
+let nextSqlQueryTabSeq = 1;
+
 const TABLE_PREVIEW_DEFAULT_LIMIT = 100;
+
+/**
+ * PostgreSQL double-quoted identifier (escape embedded quotes).
+ * @param {string} ident
+ */
+function pgQuoteIdent(ident) {
+  return `"${ident.replace(/"/g, '""')}"`;
+}
+
+/**
+ * @param {string} schemaName
+ * @param {string} tableName
+ */
+function defaultSelectSqlForTable(schemaName, tableName) {
+  const rel = `${pgQuoteIdent(schemaName)}.${pgQuoteIdent(tableName)}`;
+  return `SELECT *\nFROM ${rel}\nLIMIT 100;`;
+}
 
 /** Deferred re-render after selection change so double-click can complete on the same DOM. */
 let pendingSelectionRafId = 0;
@@ -372,10 +420,46 @@ function createTabPanelElements(tabId) {
   return { panelEl, headingEl, metaEl, bodyEl };
 }
 
+/**
+ * @param {string} tabId
+ */
+function createSqlQueryPanelElements(tabId) {
+  const panelEl = document.createElement("div");
+  panelEl.id = `sql-editor-panel-${tabId}`;
+  panelEl.setAttribute("role", "tabpanel");
+  panelEl.setAttribute("aria-labelledby", `sql-editor-tab-${tabId}`);
+  panelEl.className =
+    "flex h-full min-h-[8rem] min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-stone-200/90 bg-[#fffcf7]/90 shadow-sm shadow-stone-200/40";
+
+  const textareaEl = document.createElement("textarea");
+  textareaEl.id = `sql-editor-textarea-${tabId}`;
+  textareaEl.className =
+    "min-h-0 w-full flex-1 resize-none select-text rounded-b-md border-0 bg-transparent p-3 font-mono text-sm text-stone-800 outline-none ring-0 placeholder:text-stone-400";
+  textareaEl.setAttribute("aria-label", "SQL query");
+  textareaEl.placeholder = "";
+  textareaEl.rows = 1;
+
+  panelEl.appendChild(textareaEl);
+
+  return { panelEl, textareaEl };
+}
+
 function syncTabPanelVisibility() {
   for (const t of tablePreviewTabs) {
     t.panelEl.classList.toggle("hidden", t.id !== activeTablePreviewTabId);
   }
+}
+
+function syncSqlQueryPanelVisibility() {
+  for (const t of sqlQueryTabs) {
+    t.panelEl.classList.toggle("hidden", t.id !== activeSqlQueryTabId);
+  }
+}
+
+function updateSqlEditorAreaVisibility() {
+  const area = document.getElementById("sql-editor-area");
+  if (!area) return;
+  area.classList.toggle("hidden", sqlQueryTabs.length === 0);
 }
 
 /**
@@ -666,6 +750,225 @@ function renderTabStrip() {
   }
 }
 
+function renderSqlEditorTabStrip() {
+  const tabsStrip = document.getElementById("sql-editor-tabs");
+  if (!tabsStrip) return;
+  tabsStrip.replaceChildren();
+
+  for (const tab of sqlQueryTabs) {
+    const isActive = tab.id === activeSqlQueryTabId;
+    const wrap = document.createElement("div");
+    wrap.dataset.sqlTabId = tab.id;
+    wrap.className = isActive
+      ? "flex min-w-0 max-w-[14rem] shrink-0 select-none items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#faf8f4] px-1 pl-1.5 py-1 text-xs text-stone-800 ring-1 ring-stone-300/40"
+      : "flex min-w-0 max-w-[14rem] shrink-0 select-none items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#f0ebe3]/90 px-1 pl-1.5 py-1 text-xs text-stone-700";
+
+    const dot = document.createElement("span");
+    dot.className = "shrink-0 text-sky-600";
+    dot.setAttribute("aria-hidden", "true");
+    dot.textContent = "●";
+
+    const tabBtn = document.createElement("div");
+    tabBtn.setAttribute("role", "tab");
+    tabBtn.id = `sql-editor-tab-${tab.id}`;
+    tabBtn.tabIndex = isActive ? 0 : -1;
+    tabBtn.className = "min-w-0 flex-1 cursor-pointer truncate text-left outline-none hover:text-stone-900";
+    tabBtn.setAttribute("aria-controls", `sql-editor-panel-${tab.id}`);
+    tabBtn.setAttribute("aria-selected", isActive ? "true" : "false");
+    tabBtn.textContent = tab.tabLabel;
+    tabBtn.setAttribute("aria-label", `Query ${tab.tabLabel}`);
+    tabBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (activeSqlQueryTabId !== tab.id) {
+        activateSqlQueryTab(tab.id);
+      }
+    });
+    tabBtn.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      if (activeSqlQueryTabId !== tab.id) {
+        activateSqlQueryTab(tab.id);
+      }
+    });
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className =
+      "shrink-0 cursor-pointer rounded px-1 text-stone-500 hover:bg-stone-200/80 hover:text-stone-800";
+    closeBtn.setAttribute("aria-label", "Close tab");
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeSqlQueryTab(tab.id);
+    });
+    closeBtn.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+    });
+
+    wrap.appendChild(dot);
+    wrap.appendChild(tabBtn);
+    wrap.appendChild(closeBtn);
+    tabsStrip.appendChild(wrap);
+  }
+}
+
+/**
+ * @param {string} tabId
+ */
+function activateSqlQueryTab(tabId) {
+  if (!sqlQueryTabs.some((t) => t.id === tabId)) return;
+  activeSqlQueryTabId = tabId;
+  syncSqlQueryPanelVisibility();
+  renderSqlEditorTabStrip();
+  const t = sqlQueryTabs.find((x) => x.id === tabId);
+  if (t) {
+    window.requestAnimationFrame(() => {
+      t.textareaEl.focus();
+    });
+  }
+}
+
+/**
+ * @param {string} tabId
+ */
+function closeSqlQueryTab(tabId) {
+  const idx = sqlQueryTabs.findIndex((t) => t.id === tabId);
+  if (idx === -1) return;
+
+  const wasActive = activeSqlQueryTabId === tabId;
+  const tab = sqlQueryTabs[idx];
+  tab.panelEl.remove();
+
+  sqlQueryTabs.splice(idx, 1);
+
+  if (sqlQueryTabs.length === 0) {
+    activeSqlQueryTabId = null;
+    updateSqlEditorAreaVisibility();
+    renderSqlEditorTabStrip();
+    return;
+  }
+
+  if (wasActive) {
+    const nextIdx = idx < sqlQueryTabs.length ? idx : idx - 1;
+    const nextTab = sqlQueryTabs[nextIdx];
+    if (nextTab) {
+      activeSqlQueryTabId = nextTab.id;
+    }
+  }
+
+  syncSqlQueryPanelVisibility();
+  updateSqlEditorAreaVisibility();
+  renderSqlEditorTabStrip();
+  if (wasActive && activeSqlQueryTabId) {
+    const nt = sqlQueryTabs.find((x) => x.id === activeSqlQueryTabId);
+    if (nt) {
+      window.requestAnimationFrame(() => {
+        nt.textareaEl.focus();
+      });
+    }
+  }
+}
+
+/**
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @param {{ tabLabel: string; initialSql: string }} opts
+ */
+function openNewSqlQueryTab(profile, opts) {
+  const tabId = `sqlq-${nextSqlQueryTabSeq++}`;
+  const { panelEl, textareaEl } = createSqlQueryPanelElements(tabId);
+
+  const panelsRoot = document.getElementById("sql-editor-panels");
+  if (!panelsRoot) return;
+  panelsRoot.appendChild(panelEl);
+
+  textareaEl.value = opts.initialSql;
+
+  /** @type {SqlQueryTab} */
+  const tab = {
+    id: tabId,
+    connectionId: profile.id,
+    tabLabel: opts.tabLabel,
+    panelEl,
+    textareaEl,
+  };
+  sqlQueryTabs.push(tab);
+  activeSqlQueryTabId = tabId;
+
+  updateSqlEditorAreaVisibility();
+  syncSqlQueryPanelVisibility();
+  renderSqlEditorTabStrip();
+  window.requestAnimationFrame(() => {
+    textareaEl.focus();
+    const len = textareaEl.value.length;
+    textareaEl.setSelectionRange(len, len);
+  });
+}
+
+/**
+ * @param {string} connectionId
+ */
+function removeSqlQueryTabsForConnection(connectionId) {
+  const toRemove = sqlQueryTabs.filter((t) => t.connectionId === connectionId);
+  if (toRemove.length === 0) return;
+
+  for (const t of toRemove) {
+    t.panelEl.remove();
+  }
+  sqlQueryTabs = sqlQueryTabs.filter((t) => t.connectionId !== connectionId);
+
+  if (sqlQueryTabs.length === 0) {
+    activeSqlQueryTabId = null;
+    const tabsStrip = document.getElementById("sql-editor-tabs");
+    if (tabsStrip) tabsStrip.replaceChildren();
+    updateSqlEditorAreaVisibility();
+    return;
+  }
+
+  if (!activeSqlQueryTabId || !sqlQueryTabs.some((t) => t.id === activeSqlQueryTabId)) {
+    const last = sqlQueryTabs[sqlQueryTabs.length - 1];
+    activeSqlQueryTabId = last.id;
+  }
+
+  updateSqlEditorAreaVisibility();
+  syncSqlQueryPanelVisibility();
+  renderSqlEditorTabStrip();
+}
+
+/**
+ * Resolves which connection profile to use for a new SQL tab from the toolbar.
+ * @returns {import("./appConfig.js").ConnectionProfile | null}
+ */
+function getProfileForNewQueryFromToolbar() {
+  if (
+    selectedConnectionId &&
+    openConnectionIds.has(selectedConnectionId)
+  ) {
+    const p = lastConnections.find((c) => c.id === selectedConnectionId);
+    if (p) return p;
+  }
+  for (const c of lastConnections) {
+    if (openConnectionIds.has(c.id)) return c;
+  }
+  return null;
+}
+
+/**
+ * Opens an empty SQL tab for a saved connection (used by toolbar and connection context menu).
+ * @param {string} connectionId
+ */
+function openEmptySqlQueryForConnection(connectionId) {
+  const profile = lastConnections.find((c) => c.id === connectionId);
+  if (!profile) return;
+  if (!openConnectionIds.has(connectionId)) {
+    setStatusMessage("Open the database connection first.");
+    return;
+  }
+  openNewSqlQueryTab(profile, {
+    tabLabel: `Query ${nextSqlQueryTabSeq}`,
+    initialSql: "",
+  });
+}
+
 /**
  * @param {string} tabId
  */
@@ -719,12 +1022,14 @@ function closeTablePreviewTab(tabId) {
  */
 function removeTabsForConnection(connectionId) {
   const toRemove = tablePreviewTabs.filter((t) => t.connectionId === connectionId);
-  if (toRemove.length === 0) return;
-
-  for (const t of toRemove) {
-    t.panelEl.remove();
+  if (toRemove.length > 0) {
+    for (const t of toRemove) {
+      t.panelEl.remove();
+    }
+    tablePreviewTabs = tablePreviewTabs.filter((t) => t.connectionId !== connectionId);
   }
-  tablePreviewTabs = tablePreviewTabs.filter((t) => t.connectionId !== connectionId);
+
+  removeSqlQueryTabsForConnection(connectionId);
 
   if (tablePreviewTabs.length === 0) {
     activeTablePreviewTabId = null;
@@ -1646,8 +1951,9 @@ async function removeConnectionAfterConfirm(id) {
 function initTableLeafContextMenu() {
   const menu = document.getElementById("table-leaf-context-menu");
   const openBtn = document.getElementById("context-table-open");
+  const newQueryBtn = document.getElementById("context-table-new-query");
   const list = document.getElementById("connections-list");
-  if (!menu || !openBtn || !list) return;
+  if (!menu || !openBtn || !newQueryBtn || !list) return;
 
   /** @type {{ connectionId: string; schemaName: string; tableName: string } | null} */
   let tableLeafContextTarget = null;
@@ -1675,8 +1981,7 @@ function initTableLeafContextMenu() {
   }
 
   list.addEventListener("contextmenu", (e) => {
-    const t = e.target;
-    const leaf = t instanceof Element ? t.closest("[data-table-leaf]") : null;
+    const leaf = eventTargetElement(e)?.closest("[data-table-leaf]");
     if (!leaf || !(leaf instanceof HTMLButtonElement)) return;
     const connectionId = leaf.dataset.connectionId;
     const schemaName = leaf.dataset.schemaName;
@@ -1692,6 +1997,23 @@ function initTableLeafContextMenu() {
     const profile = lastConnections.find((c) => c.id === ctx.connectionId);
     if (!profile) return;
     openNewTableTab(profile, ctx.schemaName, ctx.tableName);
+  });
+
+  newQueryBtn.addEventListener("click", () => {
+    const ctx = tableLeafContextTarget;
+    hideMenu();
+    if (!ctx) return;
+    const profile = lastConnections.find((c) => c.id === ctx.connectionId);
+    if (!profile) return;
+    if (!openConnectionIds.has(profile.id)) {
+      setStatusMessage("Open the database connection first.");
+      return;
+    }
+    const label = `${ctx.schemaName}.${ctx.tableName}`;
+    openNewSqlQueryTab(profile, {
+      tabLabel: label,
+      initialSql: defaultSelectSqlForTable(ctx.schemaName, ctx.tableName),
+    });
   });
 
   document.addEventListener(
@@ -1816,6 +2138,16 @@ window.addEventListener("DOMContentLoaded", async () => {
   initTableLeafContextMenu();
   initTablePreviewTabContextMenu();
 
+  const newQueryBtn = document.getElementById("new-query-btn");
+  newQueryBtn?.addEventListener("click", () => {
+    const profile = getProfileForNewQueryFromToolbar();
+    if (!profile) {
+      setStatusMessage("Open a database connection first.");
+      return;
+    }
+    openEmptySqlQueryForConnection(profile.id);
+  });
+
   const wizard = initConnectionWizard({
     onConfigUpdated: (next) => {
       renderConnections(next.connections);
@@ -1824,6 +2156,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     isConnectionOpen,
     onOpenConnection: openConnection,
     onCloseConnection: closeConnection,
+    onNewQueryFromConnection: openEmptySqlQueryForConnection,
   });
 
   const editBtn = document.getElementById("edit-connection-btn");
