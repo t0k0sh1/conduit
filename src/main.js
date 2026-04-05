@@ -1020,10 +1020,25 @@ function createTableLeafRow(profile, schemaName, tableName) {
     btn.classList.add("bg-stone-200/80", "ring-1", "ring-stone-300/40");
   }
   btn.textContent = tableName;
+  btn.setAttribute("data-table-leaf", "true");
+  btn.dataset.connectionId = profile.id;
+  btn.dataset.schemaName = schemaName;
+  btn.dataset.tableName = tableName;
+  btn.title = "Double-click to open table preview";
   btn.setAttribute("aria-label", `Preview table ${schemaName}.${tableName}`);
-  btn.addEventListener("click", (e) => {
-    e.stopPropagation();
+  const openTable = () => {
     openNewTableTab(profile, schemaName, tableName);
+  };
+  btn.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    openTable();
+  });
+  btn.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      openTable();
+    }
   });
   return btn;
 }
@@ -1628,6 +1643,75 @@ async function removeConnectionAfterConfirm(id) {
   }
 }
 
+function initTableLeafContextMenu() {
+  const menu = document.getElementById("table-leaf-context-menu");
+  const openBtn = document.getElementById("context-table-open");
+  const list = document.getElementById("connections-list");
+  if (!menu || !openBtn || !list) return;
+
+  /** @type {{ connectionId: string; schemaName: string; tableName: string } | null} */
+  let tableLeafContextTarget = null;
+  let ignoreClosePointerUntil = 0;
+
+  function hideMenu() {
+    menu.classList.add("hidden");
+    tableLeafContextTarget = null;
+  }
+
+  /**
+   * @param {MouseEvent} e
+   * @param {string} connectionId
+   * @param {string} schemaName
+   * @param {string} tableName
+   */
+  function showMenu(e, connectionId, schemaName, tableName) {
+    e.preventDefault();
+    e.stopPropagation();
+    tableLeafContextTarget = { connectionId, schemaName, tableName };
+    menu.classList.remove("hidden");
+    menu.style.left = `${e.clientX}px`;
+    menu.style.top = `${e.clientY}px`;
+    ignoreClosePointerUntil = performance.now() + 400;
+  }
+
+  list.addEventListener("contextmenu", (e) => {
+    const t = e.target;
+    const leaf = t instanceof Element ? t.closest("[data-table-leaf]") : null;
+    if (!leaf || !(leaf instanceof HTMLButtonElement)) return;
+    const connectionId = leaf.dataset.connectionId;
+    const schemaName = leaf.dataset.schemaName;
+    const tableName = leaf.dataset.tableName;
+    if (!connectionId || schemaName === undefined || tableName === undefined) return;
+    showMenu(e, connectionId, schemaName, tableName);
+  });
+
+  openBtn.addEventListener("click", () => {
+    const ctx = tableLeafContextTarget;
+    hideMenu();
+    if (!ctx) return;
+    const profile = lastConnections.find((c) => c.id === ctx.connectionId);
+    if (!profile) return;
+    openNewTableTab(profile, ctx.schemaName, ctx.tableName);
+  });
+
+  document.addEventListener(
+    "mousedown",
+    (e) => {
+      if (menu.classList.contains("hidden")) return;
+      if (performance.now() < ignoreClosePointerUntil) return;
+      if (e.button !== 0) return;
+      const t = e.target;
+      if (t instanceof Node && menu.contains(t)) return;
+      hideMenu();
+    },
+    true,
+  );
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideMenu();
+  });
+}
+
 function initTablePreviewTabContextMenu() {
   const menu = document.getElementById("table-preview-tab-context-menu");
   const tabsStrip = document.getElementById("table-preview-tabs");
@@ -1729,6 +1813,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   setSidebarOpen(config.ui.sidebarOpen);
   initSidebarResize();
   renderConnections(config.connections);
+  initTableLeafContextMenu();
   initTablePreviewTabContextMenu();
 
   const wizard = initConnectionWizard({
