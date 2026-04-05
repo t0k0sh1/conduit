@@ -114,8 +114,29 @@ let nextTablePreviewTabSeq = 1;
  *   formatBtn: HTMLButtonElement;
  *   resultMetaEl: HTMLElement;
  *   resultBodyEl: HTMLElement;
+ *   lineNumbersGutterEl: HTMLElement;
+ *   lineNumbersPreEl: HTMLPreElement;
  * }} SqlQueryTab
  */
+
+/**
+ * @param {HTMLTextAreaElement} textareaEl
+ * @param {HTMLElement} lineNumbersPre
+ */
+function syncSqlConsoleLineNumbers(textareaEl, lineNumbersPre) {
+  const n = Math.max(1, textareaEl.value.split(/\r\n|\n|\r/).length);
+  lineNumbersPre.textContent = Array.from({ length: n }, (_, i) =>
+    String(i + 1),
+  ).join("\n");
+}
+
+/**
+ * @param {HTMLTextAreaElement} textareaEl
+ * @param {HTMLElement} lineNumbersGutter
+ */
+function syncSqlConsoleLineNumbersScroll(textareaEl, lineNumbersGutter) {
+  lineNumbersGutter.scrollTop = textareaEl.scrollTop;
+}
 
 /** @type {SqlQueryTab[]} */
 let sqlQueryTabs = [];
@@ -1262,21 +1283,26 @@ function createSqlQueryPanelElements(tabId) {
   runBtn.type = "button";
   runBtn.id = `sql-editor-run-${tabId}`;
   runBtn.className =
-    "rounded border border-stone-300/90 bg-stone-100/90 px-2.5 py-1 text-xs font-medium text-stone-800 hover:bg-stone-200/90 disabled:cursor-not-allowed disabled:opacity-50";
-  runBtn.textContent = "Run";
+    "rounded p-1.5 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-50";
   runBtn.title = runSqlButtonTitle();
   runBtn.setAttribute("aria-label", "Run SQL");
   runBtn.setAttribute("aria-keyshortcuts", ariaRunSqlShortcut());
+  runBtn.innerHTML = `<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+</svg>`;
 
   const formatBtn = document.createElement("button");
   formatBtn.type = "button";
   formatBtn.id = `sql-editor-format-${tabId}`;
   formatBtn.className =
-    "rounded border border-stone-300/90 bg-stone-100/90 px-2.5 py-1 text-xs font-medium text-stone-800 hover:bg-stone-200/90 disabled:cursor-not-allowed disabled:opacity-50";
-  formatBtn.textContent = "Format";
+    "rounded p-1.5 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-50";
   formatBtn.title = formatSqlButtonTitle();
   formatBtn.setAttribute("aria-label", "Format SQL");
   formatBtn.setAttribute("aria-keyshortcuts", ARIA_FORMAT_SQL_SHORTCUT);
+  formatBtn.innerHTML = `<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12"/>
+</svg>`;
 
   toolbar.appendChild(runBtn);
   toolbar.appendChild(formatBtn);
@@ -1284,15 +1310,32 @@ function createSqlQueryPanelElements(tabId) {
   const editorWrap = document.createElement("div");
   editorWrap.className = "flex min-h-0 flex-1 flex-col";
 
+  const editorRow = document.createElement("div");
+  editorRow.className = "flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden";
+
+  const lineNumbersGutterEl = document.createElement("div");
+  lineNumbersGutterEl.className =
+    "sql-console-line-gutter min-w-[2.5rem] shrink-0 overflow-y-auto overflow-x-hidden border-r border-stone-200/80 bg-[#f3efe6]/50 py-2 pl-1.5 pr-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
+  lineNumbersGutterEl.setAttribute("aria-hidden", "true");
+
+  const lineNumbersPreEl = document.createElement("pre");
+  lineNumbersPreEl.className =
+    "m-0 select-none text-right font-mono text-sm leading-6 text-stone-400 tabular-nums";
+  lineNumbersPreEl.textContent = "1";
+
+  lineNumbersGutterEl.appendChild(lineNumbersPreEl);
+
   const textareaEl = document.createElement("textarea");
   textareaEl.id = `sql-editor-textarea-${tabId}`;
   textareaEl.className =
-    "min-h-0 w-full flex-1 resize-none select-text border-0 bg-transparent p-3 font-mono text-sm text-stone-800 outline-none ring-0 placeholder:text-stone-400";
+    "min-h-0 min-w-0 flex-1 resize-none select-text overflow-auto whitespace-pre border-0 bg-transparent px-2 py-2 font-mono text-sm leading-6 text-stone-800 outline-none ring-0 placeholder:text-stone-400";
   textareaEl.setAttribute("aria-label", "SQL query");
   textareaEl.placeholder = "";
   textareaEl.rows = 1;
 
-  editorWrap.appendChild(textareaEl);
+  editorRow.appendChild(lineNumbersGutterEl);
+  editorRow.appendChild(textareaEl);
+  editorWrap.appendChild(editorRow);
 
   const resultWrap = document.createElement("div");
   resultWrap.className =
@@ -1337,7 +1380,29 @@ function createSqlQueryPanelElements(tabId) {
     }
   });
 
-  return { panelEl, textareaEl, runBtn, formatBtn, resultMetaEl, resultBodyEl };
+  const onSqlConsoleInput = () => {
+    syncSqlConsoleLineNumbers(textareaEl, lineNumbersPreEl);
+  };
+  textareaEl.addEventListener("input", onSqlConsoleInput);
+  textareaEl.addEventListener("paste", () => {
+    window.requestAnimationFrame(() => {
+      syncSqlConsoleLineNumbers(textareaEl, lineNumbersPreEl);
+    });
+  });
+  textareaEl.addEventListener("scroll", () => {
+    syncSqlConsoleLineNumbersScroll(textareaEl, lineNumbersGutterEl);
+  });
+
+  return {
+    panelEl,
+    textareaEl,
+    runBtn,
+    formatBtn,
+    resultMetaEl,
+    resultBodyEl,
+    lineNumbersGutterEl,
+    lineNumbersPreEl,
+  };
 }
 
 function syncTabPanelVisibility() {
@@ -1860,14 +1925,23 @@ function closeSqlQueryTab(tabId) {
  */
 function openNewSqlQueryTab(profile, opts) {
   const tabId = `sqlq-${nextSqlQueryTabSeq++}`;
-  const { panelEl, textareaEl, runBtn, formatBtn, resultMetaEl, resultBodyEl } =
-    createSqlQueryPanelElements(tabId);
+  const {
+    panelEl,
+    textareaEl,
+    runBtn,
+    formatBtn,
+    resultMetaEl,
+    resultBodyEl,
+    lineNumbersGutterEl,
+    lineNumbersPreEl,
+  } = createSqlQueryPanelElements(tabId);
 
   const panelsRoot = document.getElementById("sql-editor-panels");
   if (!panelsRoot) return;
   panelsRoot.appendChild(panelEl);
 
   textareaEl.value = opts.initialSql;
+  syncSqlConsoleLineNumbers(textareaEl, lineNumbersPreEl);
 
   /** @type {SqlQueryTab} */
   const tab = {
@@ -1880,6 +1954,8 @@ function openNewSqlQueryTab(profile, opts) {
     formatBtn,
     resultMetaEl,
     resultBodyEl,
+    lineNumbersGutterEl,
+    lineNumbersPreEl,
   };
   sqlQueryTabs.push(tab);
   activeSqlQueryTabId = tabId;
@@ -2420,6 +2496,8 @@ async function formatSqlForTab(tabId) {
       const pos = formatted.length;
       el.setSelectionRange(pos, pos);
     }
+    syncSqlConsoleLineNumbers(el, tab.lineNumbersPreEl);
+    syncSqlConsoleLineNumbersScroll(el, tab.lineNumbersGutterEl);
     setStatusMessage("Ready");
   } catch (e) {
     setStatusMessage(formatSqlFormatError(e));

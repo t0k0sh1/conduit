@@ -64,14 +64,14 @@ export const ARIA_FORMAT_SQL_SHORTCUT = "Shift+Alt+KeyF";
  * @returns {string}
  */
 export function runSqlButtonTitle() {
-  return `Run SQL (${modShortcutDisplay("Enter")}): selected text if highlighted, otherwise the whole editor`;
+  return `Run SQL (${modShortcutDisplay("Enter")}): selected text if highlighted, otherwise the whole console`;
 }
 
 /**
  * @returns {string}
  */
 export function formatSqlButtonTitle() {
-  return "Format SQL (Shift+Alt+F): selected text if highlighted, otherwise the whole editor";
+  return "Format SQL (Shift+Alt+F): selected text if highlighted, otherwise the whole console";
 }
 
 /**
