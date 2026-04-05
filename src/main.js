@@ -460,6 +460,86 @@ function updateSqlEditorAreaVisibility() {
   const area = document.getElementById("sql-editor-area");
   if (!area) return;
   area.classList.toggle("hidden", sqlQueryTabs.length === 0);
+  renderSqlConnectionRow();
+}
+
+/**
+ * Toolbar row below the main menu: always visible; shows which database the active
+ * SQL tab uses (or the sidebar selection when no query tabs) and allows switching
+ * among open connections.
+ */
+function renderSqlConnectionRow() {
+  const row = document.getElementById("sql-editor-connection-row");
+  const select = document.getElementById("sql-editor-connection-select");
+  if (!row || !select) return;
+
+  /** @type {import("./appConfig.js").ConnectionProfile[]} */
+  const open = lastConnections
+    .filter((c) => openConnectionIds.has(c.id))
+    .sort((a, b) => (a.label || a.id).localeCompare(b.label || b.id));
+
+  select.replaceChildren();
+
+  if (open.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "No open database";
+    opt.disabled = true;
+    select.appendChild(opt);
+    select.value = "";
+    select.disabled = true;
+    return;
+  }
+
+  select.disabled = false;
+  for (const c of open) {
+    const opt = document.createElement("option");
+    opt.value = c.id;
+    opt.textContent = c.label || c.id;
+    opt.title = `${c.host}:${c.port}/${c.database}`;
+    select.appendChild(opt);
+  }
+
+  const activeTab =
+    activeSqlQueryTabId &&
+    sqlQueryTabs.find((t) => t.id === activeSqlQueryTabId);
+  if (activeTab) {
+    if (open.some((c) => c.id === activeTab.connectionId)) {
+      select.value = activeTab.connectionId;
+    } else if (open[0]) {
+      activeTab.connectionId = open[0].id;
+      select.value = open[0].id;
+    }
+    return;
+  }
+
+  const preferred =
+    selectedConnectionId && open.some((c) => c.id === selectedConnectionId)
+      ? selectedConnectionId
+      : open[0].id;
+  select.value = preferred;
+}
+
+function initSqlEditorConnectionRow() {
+  const select = document.getElementById("sql-editor-connection-select");
+  if (!select) return;
+  select.addEventListener("change", () => {
+    const id = select.value;
+    if (!id) return;
+    const tab =
+      activeSqlQueryTabId &&
+      sqlQueryTabs.find((t) => t.id === activeSqlQueryTabId);
+    if (tab) {
+      if (id === tab.connectionId) return;
+      tab.connectionId = id;
+      renderSqlEditorTabStrip();
+      return;
+    }
+    if (selectedConnectionId !== id) {
+      selectedConnectionId = id;
+      renderConnections(lastConnections);
+    }
+  });
 }
 
 /**
@@ -810,6 +890,8 @@ function renderSqlEditorTabStrip() {
     wrap.appendChild(closeBtn);
     tabsStrip.appendChild(wrap);
   }
+
+  renderSqlConnectionRow();
 }
 
 /**
@@ -1873,6 +1955,8 @@ function renderConnections(connections) {
   }
 
   syncConnectionActionButtons();
+
+  renderSqlConnectionRow();
 }
 
 /**
@@ -2123,6 +2207,7 @@ function initTablePreviewTabContextMenu() {
 
 window.addEventListener("DOMContentLoaded", async () => {
   installPlainTextInputDefaults();
+  initSqlEditorConnectionRow();
 
   const toggle = document.getElementById("sidebar-toggle");
   if (!toggle) return;
