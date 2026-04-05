@@ -86,10 +86,10 @@ export function initConnectionWizard({
 
   function setWizardMode(mode) {
     if (mode === "edit") {
-      dialogTitle.textContent = "Edit database connection";
+      dialogTitle.textContent = "Edit data source";
       submitLabel.textContent = "Save";
     } else {
-      dialogTitle.textContent = "Add database connection";
+      dialogTitle.textContent = "Add data source";
       submitLabel.textContent = "Add";
     }
   }

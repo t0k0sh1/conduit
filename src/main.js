@@ -21,6 +21,16 @@ import {
 } from "./dbMetadata.js";
 import { installPlainTextInputDefaults } from "./inputBehavior.js";
 import { formatSql } from "./sqlFormat.js";
+import {
+  addDataSourceTitle,
+  ariaModDigit,
+  ariaModLetter,
+  ariaRunSqlShortcut,
+  ARIA_FORMAT_SQL_SHORTCUT,
+  formatSqlButtonTitle,
+  runSqlButtonTitle,
+  toggleDatabaseExplorerTitle,
+} from "./shortcutHints.js";
 
 const SIDEBAR_DEFAULT_WIDTH_PX = 256;
 const SIDEBAR_MIN_WIDTH_PX = 160;
@@ -484,6 +494,9 @@ const errorsByPath = new Map();
 /** @type {import("./appConfig.js").ConnectionProfile[]} */
 let lastConnections = [];
 
+/** True while {@link expandAllExplorerTree} is running (disables expand/collapse controls). */
+let explorerExpandAllInFlight = false;
+
 /** Object-kind folders under each schema (matches Rust `parse_relation_kind`). */
 const KIND_GROUPS = [
   { key: "tables", label: "Tables" },
@@ -836,9 +849,9 @@ function createSqlQueryPanelElements(tabId) {
   runBtn.className =
     "rounded border border-stone-300/90 bg-stone-100/90 px-2.5 py-1 text-xs font-medium text-stone-800 hover:bg-stone-200/90 disabled:cursor-not-allowed disabled:opacity-50";
   runBtn.textContent = "Run";
-  runBtn.title =
-    "Run SQL: selected text if highlighted, otherwise the whole editor (⌘ Enter or Ctrl+Enter)";
+  runBtn.title = runSqlButtonTitle();
   runBtn.setAttribute("aria-label", "Run SQL");
+  runBtn.setAttribute("aria-keyshortcuts", ariaRunSqlShortcut());
 
   const formatBtn = document.createElement("button");
   formatBtn.type = "button";
@@ -846,9 +859,9 @@ function createSqlQueryPanelElements(tabId) {
   formatBtn.className =
     "rounded border border-stone-300/90 bg-stone-100/90 px-2.5 py-1 text-xs font-medium text-stone-800 hover:bg-stone-200/90 disabled:cursor-not-allowed disabled:opacity-50";
   formatBtn.textContent = "Format";
-  formatBtn.title =
-    "Format SQL: selected text if highlighted, otherwise the whole editor (Shift+Alt+F)";
+  formatBtn.title = formatSqlButtonTitle();
   formatBtn.setAttribute("aria-label", "Format SQL");
+  formatBtn.setAttribute("aria-keyshortcuts", ARIA_FORMAT_SQL_SHORTCUT);
 
   toolbar.appendChild(runBtn);
   toolbar.appendChild(formatBtn);
@@ -951,7 +964,7 @@ function renderSqlConnectionRow() {
   if (open.length === 0) {
     const opt = document.createElement("option");
     opt.value = "";
-    opt.textContent = "No open database";
+    opt.textContent = "No open data source";
     opt.disabled = true;
     select.appendChild(opt);
     select.value = "";
@@ -1522,7 +1535,7 @@ function openEmptySqlQueryForConnection(connectionId) {
   const profile = lastConnections.find((c) => c.id === connectionId);
   if (!profile) return;
   if (!openConnectionIds.has(connectionId)) {
-    setStatusMessage("Open the database connection first.");
+    setStatusMessage("Open the data source first.");
     return;
   }
   openNewSqlQueryTab(profile, {
@@ -2016,7 +2029,7 @@ async function runSqlQueryForTab(tabId) {
     return;
   }
   if (!openConnectionIds.has(tab.connectionId)) {
-    setStatusMessage("Open the database connection first.");
+    setStatusMessage("Open the data source first.");
     return;
   }
   const sql = getSqlToRunFromEditor(tab.textareaEl);
@@ -2986,6 +2999,13 @@ function closeConnection(id) {
   renderConnections(lastConnections);
 }
 
+async function toggleSidebarPersisted() {
+  const next = await updateAppConfig((c) => {
+    c.ui.sidebarOpen = !c.ui.sidebarOpen;
+  });
+  setSidebarOpen(next.ui.sidebarOpen);
+}
+
 function setSidebarOpen(open) {
   const sidebar = document.getElementById("sidebar");
   const toggle = document.getElementById("sidebar-toggle");
@@ -3076,6 +3096,186 @@ function syncConnectionActionButtons() {
 }
 
 /**
+ * @param {KeyboardEvent} e
+ * @returns {boolean}
+ */
+function isKeyboardEventFromEditableTarget(e) {
+  const el = eventTargetElement(e);
+  if (!el) return false;
+  if (
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLTextAreaElement ||
+    el instanceof HTMLSelectElement ||
+    (el instanceof HTMLElement && el.isContentEditable)
+  ) {
+    return true;
+  }
+  return Boolean(
+    el.closest("input, textarea, select, [contenteditable='true']"),
+  );
+}
+
+/**
+ * @returns {boolean}
+ */
+function hasExplorerExpandTargets() {
+  for (const c of lastConnections) {
+    if (
+      openConnectionIds.has(c.id) &&
+      !objectTreeCollapsedByConnectionId.has(c.id)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function syncExplorerTreeActionButtons() {
+  const expandBtn = document.getElementById("explorer-expand-all-btn");
+  const collapseBtn = document.getElementById("explorer-collapse-all-btn");
+  const noConnections = lastConnections.length === 0;
+  const canExpand =
+    !noConnections &&
+    hasExplorerExpandTargets() &&
+    !explorerExpandAllInFlight;
+  const canCollapse =
+    !noConnections &&
+    expandedTreePaths.size > 0 &&
+    !explorerExpandAllInFlight;
+  if (expandBtn instanceof HTMLButtonElement) {
+    expandBtn.disabled = !canExpand;
+  }
+  if (collapseBtn instanceof HTMLButtonElement) {
+    collapseBtn.disabled = !canCollapse;
+  }
+}
+
+function collapseAllExplorerPaths() {
+  for (const c of lastConnections) {
+    pruneExpandedPathsForConnection(c.id);
+  }
+  setStatusMessage("Ready");
+  renderConnections(lastConnections);
+}
+
+/**
+ * Expands every lazy node for open, visible connection trees (may trigger many metadata requests).
+ */
+async function expandAllExplorerTree() {
+  const targets = lastConnections.filter(
+    (c) =>
+      openConnectionIds.has(c.id) &&
+      !objectTreeCollapsedByConnectionId.has(c.id),
+  );
+  if (targets.length === 0) {
+    setStatusMessage("Open a data source and show its tree first.");
+    return;
+  }
+  if (explorerExpandAllInFlight) return;
+  explorerExpandAllInFlight = true;
+  syncExplorerTreeActionButtons();
+  setStatusMessage("Expanding tree…");
+  try {
+    for (const profile of targets) {
+      const id = profile.id;
+      expandedTreePaths.add(`${id}::schemas`);
+      expandedTreePaths.add(`${id}::system`);
+      expandedTreePaths.add(`${id}::extensions`);
+      try {
+        await Promise.all([
+          fetchUserSchemas(profile),
+          fetchSystemSchemaNames(profile),
+          fetchExtensions(profile),
+        ]);
+      } catch (e) {
+        const msg = formatConnectionFailureMessage(e);
+        errorsByPath.set(`${id}::schemas`, msg);
+        errorsByPath.set(`${id}::system`, msg);
+        errorsByPath.set(`${id}::extensions`, msg);
+        continue;
+      }
+      const userNames = getCachedUserSchemas(id);
+      const sysNames = getCachedSystemSchemas(id);
+      if (userNames !== undefined) {
+        for (const schemaName of userNames) {
+          const basePath = `${id}::schema::${schemaName}`;
+          expandedTreePaths.add(basePath);
+          for (const { key } of KIND_GROUPS) {
+            expandedTreePaths.add(`${basePath}::${key}`);
+          }
+        }
+      }
+      if (sysNames !== undefined) {
+        for (const schemaName of sysNames) {
+          const basePath = `${id}::system::${schemaName}`;
+          expandedTreePaths.add(basePath);
+          for (const { key } of KIND_GROUPS) {
+            expandedTreePaths.add(`${basePath}::${key}`);
+          }
+        }
+      }
+      const fetches = [];
+      if (userNames !== undefined) {
+        for (const schemaName of userNames) {
+          for (const { key } of KIND_GROUPS) {
+            fetches.push(
+              fetchRelationObjects(
+                profile,
+                schemaName,
+                /** @type {"tables"|"views"|"materialized_views"|"functions"|"sequences"} */ (
+                  key
+                ),
+              ).catch(() => undefined),
+            );
+          }
+        }
+      }
+      if (sysNames !== undefined) {
+        for (const schemaName of sysNames) {
+          for (const { key } of KIND_GROUPS) {
+            fetches.push(
+              fetchRelationObjects(
+                profile,
+                schemaName,
+                /** @type {"tables"|"views"|"materialized_views"|"functions"|"sequences"} */ (
+                  key
+                ),
+              ).catch(() => undefined),
+            );
+          }
+        }
+      }
+      await Promise.all(fetches);
+    }
+    setStatusMessage("Ready");
+  } catch (e) {
+    setStatusMessage(
+      e instanceof Error ? e.message : "Could not expand the tree.",
+    );
+  } finally {
+    explorerExpandAllInFlight = false;
+    syncExplorerTreeActionButtons();
+    renderConnections(lastConnections);
+  }
+}
+
+/**
+ * Applies platform-specific shortcut labels to static controls (sidebar, explorer).
+ */
+function applyShortcutHintsToStaticUi() {
+  const toggle = document.getElementById("sidebar-toggle");
+  if (toggle instanceof HTMLButtonElement) {
+    toggle.title = toggleDatabaseExplorerTitle();
+    toggle.setAttribute("aria-keyshortcuts", ariaModDigit("1"));
+  }
+  const addBtn = document.getElementById("add-connection-btn");
+  if (addBtn instanceof HTMLButtonElement) {
+    addBtn.title = addDataSourceTitle();
+    addBtn.setAttribute("aria-keyshortcuts", ariaModLetter("N"));
+  }
+}
+
+/**
  * @param {import("./appConfig.js").ConnectionProfile[]} connections
  */
 function renderConnections(connections) {
@@ -3096,7 +3296,14 @@ function renderConnections(connections) {
 function flushConnectionsUi() {
   const connections = lastConnections;
   const list = document.getElementById("connections-list");
+  const emptyState = document.getElementById("connections-empty-state");
   if (!list) return;
+
+  if (emptyState) {
+    const isEmpty = connections.length === 0;
+    emptyState.classList.toggle("hidden", !isEmpty);
+    list.classList.toggle("hidden", isEmpty);
+  }
 
   cancelAnimationFrame(pendingSelectionRafId);
   pendingSelectionRafId = 0;
@@ -3205,6 +3412,7 @@ function flushConnectionsUi() {
   }
 
   syncConnectionActionButtons();
+  syncExplorerTreeActionButtons();
 
   renderSqlConnectionRow();
 }
@@ -3278,7 +3486,7 @@ async function removeConnectionAfterConfirm(id) {
     const status = document.getElementById("status-message");
     if (status) {
       status.textContent =
-        err instanceof Error ? err.message : "Failed to remove connection.";
+        err instanceof Error ? err.message : "Failed to remove data source.";
     }
   }
 }
@@ -3342,7 +3550,7 @@ function initTableLeafContextMenu() {
     const profile = lastConnections.find((c) => c.id === ctx.connectionId);
     if (!profile) return;
     if (!openConnectionIds.has(profile.id)) {
-      setStatusMessage("Open the database connection first.");
+      setStatusMessage("Open the data source first.");
       return;
     }
     const label = `${ctx.schemaName}.${ctx.tableName}`;
@@ -3477,12 +3685,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderConnections(config.connections);
   initTableLeafContextMenu();
   initTablePreviewTabContextMenu();
+  applyShortcutHintsToStaticUi();
 
   const newQueryBtn = document.getElementById("new-query-btn");
   newQueryBtn?.addEventListener("click", () => {
     const profile = getProfileForNewQueryFromToolbar();
     if (!profile) {
-      setStatusMessage("Open a database connection first.");
+      setStatusMessage("Open a data source first.");
       return;
     }
     openEmptySqlQueryForConnection(profile.id);
@@ -3513,10 +3722,45 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
-  toggle.addEventListener("click", async () => {
-    const next = await updateAppConfig((c) => {
-      c.ui.sidebarOpen = !c.ui.sidebarOpen;
-    });
-    setSidebarOpen(next.ui.sidebarOpen);
+  const addConnectionBtn = document.getElementById("add-connection-btn");
+  const emptyCreateBtn = document.getElementById("connections-empty-create-btn");
+  emptyCreateBtn?.addEventListener("click", () => {
+    addConnectionBtn?.click();
   });
+
+  document.getElementById("explorer-expand-all-btn")?.addEventListener(
+    "click",
+    () => {
+      void expandAllExplorerTree();
+    },
+  );
+  document.getElementById("explorer-collapse-all-btn")?.addEventListener(
+    "click",
+    () => {
+      collapseAllExplorerPaths();
+    },
+  );
+
+  toggle.addEventListener("click", () => {
+    void toggleSidebarPersisted();
+  });
+
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (isKeyboardEventFromEditableTarget(e)) return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.repeat) return;
+      if (e.key === "n" || e.key === "N") {
+        e.preventDefault();
+        addConnectionBtn?.click();
+        return;
+      }
+      if (e.key === "1") {
+        e.preventDefault();
+        void toggleSidebarPersisted();
+      }
+    },
+    true,
+  );
 });

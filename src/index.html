@@ -25,11 +25,11 @@
             type="button"
             id="sidebar-toggle"
             class="rounded p-1.5 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900"
-            title="Sidebar"
+            title="Toggle Database Explorer"
             aria-expanded="true"
             aria-controls="sidebar"
           >
-            <span class="sr-only">Toggle sidebar</span>
+            <span class="sr-only">Toggle Database Explorer</span>
             <svg
               class="h-5 w-5"
               fill="none"
@@ -189,13 +189,13 @@
           id="sql-editor-connection-row"
           class="flex min-h-0 min-w-0 items-center border-t border-stone-200/80 bg-[#f0ebe3] px-2 py-1.5"
           role="region"
-          aria-label="Database connection"
+          aria-label="Data source"
         >
           <select
             id="sql-editor-connection-select"
             class="w-44 max-w-full shrink-0 rounded border border-stone-200/90 bg-[#f3efe6] px-2 py-1 text-sm text-stone-800 outline-none ring-0 focus:border-stone-400"
             autocomplete="off"
-            aria-label="Database connection for SQL editor"
+            aria-label="Data source for SQL editor"
           ></select>
         </div>
       </div>
@@ -208,19 +208,66 @@
           class="flex shrink-0 select-none flex-col overflow-hidden border-r border-stone-200/90 bg-[#f3efe6] transition-[width,opacity] duration-200 ease-out"
         >
           <div
-            class="flex shrink-0 items-center justify-between gap-2 border-b border-stone-200/90 px-2 py-2"
+            class="flex shrink-0 flex-col gap-1.5 border-b border-stone-200/90 px-2 py-2"
           >
-            <span
-              class="text-xs font-medium uppercase tracking-wide text-stone-500"
-              >Objects</span
-            >
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-xs font-medium text-stone-600"
+                >Database Explorer</span
+              >
+              <div class="flex shrink-0 items-center gap-0.5">
+                <button
+                  type="button"
+                  id="explorer-expand-all-btn"
+                  class="rounded p-1 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-stone-600"
+                  title="Expand all"
+                  aria-label="Expand all"
+                >
+                  <svg
+                    class="h-4 w-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M19 9l-7 7-7-7m14 6l-7 7-7-7"
+                    />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  id="explorer-collapse-all-btn"
+                  class="rounded p-1 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-stone-600"
+                  title="Collapse all"
+                  aria-label="Collapse all"
+                >
+                  <svg
+                    class="h-4 w-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M5 15l7-7 7 7m-14-6l7-7 7 7"
+                    />
+                  </svg>
+                </button>
+              </div>
+            </div>
             <div class="flex shrink-0 items-center gap-0.5">
               <button
                 type="button"
                 id="add-connection-btn"
                 class="rounded p-1 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900"
-                title="Add database"
-                aria-label="Add database"
+                title="Add data source"
+                aria-label="Add data source"
               >
                 <svg
                   class="h-4 w-4"
@@ -242,8 +289,8 @@
                 id="edit-connection-btn"
                 disabled
                 class="rounded p-1 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-stone-600"
-                title="Edit database"
-                aria-label="Edit database"
+                title="Edit data source"
+                aria-label="Edit data source"
               >
                 <svg
                   class="h-4 w-4"
@@ -265,8 +312,8 @@
                 id="remove-connection-btn"
                 disabled
                 class="rounded p-1 text-stone-600 hover:bg-stone-200/90 hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-stone-600"
-                title="Remove database"
-                aria-label="Remove database"
+                title="Remove data source"
+                aria-label="Remove data source"
               >
                 <svg
                   class="h-4 w-4"
@@ -287,9 +334,22 @@
           </div>
           <nav
             id="connection-tree-nav"
-            class="min-h-0 flex-1 overflow-y-auto px-2 py-2 text-sm"
-            aria-label="Connection tree"
+            class="relative flex min-h-0 flex-1 flex-col overflow-y-auto px-2 py-2 text-sm"
+            aria-label="Database Explorer"
           >
+            <div
+              id="connections-empty-state"
+              class="hidden flex flex-1 flex-col items-center justify-center gap-1 text-center text-xs text-stone-600"
+            >
+              <p class="text-stone-600">No data sources yet.</p>
+              <button
+                type="button"
+                id="connections-empty-create-btn"
+                class="text-sm font-medium text-amber-900/90 underline decoration-amber-800/40 underline-offset-2 hover:text-amber-950"
+              >
+                Create data source
+              </button>
+            </div>
             <ul id="connections-list" class="space-y-0.5"></ul>
           </nav>
         </aside>
@@ -370,7 +430,7 @@
         id="context-add-connection"
         class="w-full px-3 py-1.5 text-left hover:bg-stone-200/90"
       >
-        Add database
+        Add data source
       </button>
       <div role="separator" class="my-1 border-t border-stone-200/90"></div>
       <button
@@ -380,7 +440,7 @@
         disabled
         class="w-full px-3 py-1.5 text-left hover:bg-stone-200/90 disabled:cursor-default disabled:text-stone-400 disabled:hover:bg-transparent"
       >
-        Open database
+        Open data source
       </button>
       <button
         type="button"
@@ -389,7 +449,7 @@
         disabled
         class="w-full px-3 py-1.5 text-left hover:bg-stone-200/90 disabled:cursor-default disabled:text-stone-400 disabled:hover:bg-transparent"
       >
-        Close database
+        Close data source
       </button>
       <button
         type="button"
@@ -408,7 +468,7 @@
         disabled
         class="w-full px-3 py-1.5 text-left hover:bg-stone-200/90 disabled:cursor-default disabled:text-stone-400 disabled:hover:bg-transparent"
       >
-        Edit database
+        Edit data source
       </button>
       <button
         type="button"
@@ -417,7 +477,7 @@
         disabled
         class="w-full px-3 py-1.5 text-left text-red-800 hover:bg-stone-200/90 disabled:cursor-default disabled:text-stone-400 disabled:hover:bg-transparent"
       >
-        Delete database
+        Delete data source
       </button>
     </div>
 
@@ -498,7 +558,7 @@
             id="wizard-dialog-title"
             class="text-sm font-semibold text-stone-900"
           >
-            Add database connection
+            Add data source
           </h2>
           <p class="mt-0.5 text-xs text-stone-500">Step 1 / 1</p>
         </div>
@@ -646,14 +706,14 @@
     >
       <div class="px-4 py-3">
         <h2 class="text-sm font-semibold text-stone-900">
-          Remove database connection
+          Remove data source
         </h2>
         <p
           id="delete-connection-message"
           class="mt-2 select-text text-sm text-stone-600"
         ></p>
         <p class="mt-2 select-text text-xs text-stone-500">
-          This removes the saved connection and any stored credentials for it
+          This removes the saved data source and any stored credentials for it
           from this device.
         </p>
       </div>
@@ -684,7 +744,7 @@
       <form id="session-password-form" class="flex flex-col" autocomplete="off">
         <div class="px-4 py-3">
           <h2 class="text-sm font-semibold text-stone-900">
-            Connect to database
+            Connect to data source
           </h2>
           <p
             id="session-password-description"
