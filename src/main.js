@@ -448,6 +448,15 @@ function defaultSelectSqlForTable(schemaName, tableName) {
 /** Deferred re-render after selection change so double-click can complete on the same DOM. */
 let pendingSelectionRafId = 0;
 
+/** Coalesce rapid `renderConnections` calls (toggle + many stale-refresh completions) into one DOM rebuild. */
+let connectionsUiFlushScheduled = false;
+
+/** Debounce timer for `renderConnections` after silent stale-refresh completions (see `scheduleSilentStaleRefreshIfNeeded`). */
+let staleRefreshRenderDebounceTimer = 0;
+
+/** @see flushConnectionsUi — long tasks here block input until the browser finishes; profile with Performance / Long Task. */
+const STALE_REFRESH_RENDER_DEBOUNCE_MS = 100;
+
 /** Connection profiles whose database node is expanded in the tree. */
 const openConnectionIds = new Set();
 
@@ -486,6 +495,13 @@ const KIND_GROUPS = [
 
 /** Kinds that support the same row preview as base tables (`SELECT *`). */
 const PREVIEWABLE_REL_KINDS = new Set(["tables", "views", "materialized_views"]);
+
+/** Relation leaf lists: sync first chunk, then rAF chunks to avoid long main-thread tasks. */
+const RELATION_LEAF_SYNC_FIRST = 80;
+const RELATION_LEAF_RAF_CHUNK = 100;
+/** Lists longer than this use "Show more" after the first visible window. */
+const RELATION_LIST_SHOW_MORE_TOTAL = 320;
+const RELATION_SHOW_MORE_INITIAL_VISIBLE = 300;
 
 /**
  * @param {"tables"|"views"|"materialized_views"} kind
@@ -577,7 +593,7 @@ async function ensureLoaded(path, profile) {
 async function toggleTreePath(path, profile) {
   if (expandedTreePaths.has(path)) {
     expandedTreePaths.delete(path);
-    renderConnections(lastConnections);
+    renderAfterTreeToggle(profile);
     return;
   }
   expandedTreePaths.add(path);
@@ -592,7 +608,7 @@ async function toggleTreePath(path, profile) {
 
   if (needsFetch) {
     loadingPaths.add(path);
-    renderConnections(lastConnections);
+    renderAfterTreeToggle(profile);
     try {
       errorsByPath.delete(path);
       await ensureLoaded(path, profile);
@@ -601,10 +617,10 @@ async function toggleTreePath(path, profile) {
     } finally {
       loadingPaths.delete(path);
     }
-    renderConnections(lastConnections);
+    renderAfterTreeToggle(profile);
     return;
   }
-  renderConnections(lastConnections);
+  renderAfterTreeToggle(profile);
 }
 
 /**
@@ -635,6 +651,19 @@ function isExpandedPathStale(path, profile) {
  * @param {string} path
  * @param {import("./appConfig.js").ConnectionProfile} profile
  */
+/**
+ * Batches UI updates when many `scheduleSilentStaleRefreshIfNeeded` runs finish around the same time.
+ */
+function scheduleDebouncedRenderAfterStaleRefresh() {
+  if (staleRefreshRenderDebounceTimer) {
+    clearTimeout(staleRefreshRenderDebounceTimer);
+  }
+  staleRefreshRenderDebounceTimer = window.setTimeout(() => {
+    staleRefreshRenderDebounceTimer = 0;
+    renderConnections(lastConnections);
+  }, STALE_REFRESH_RENDER_DEBOUNCE_MS);
+}
+
 function scheduleSilentStaleRefreshIfNeeded(path, profile) {
   if (silentStaleRefreshInFlight.has(path)) return;
   if (loadingPaths.has(path)) return;
@@ -650,7 +679,7 @@ function scheduleSilentStaleRefreshIfNeeded(path, profile) {
       errorsByPath.set(path, formatConnectionFailureMessage(e));
     } finally {
       silentStaleRefreshInFlight.delete(path);
-      renderConnections(lastConnections);
+      scheduleDebouncedRenderAfterStaleRefresh();
     }
   })();
 }
@@ -697,6 +726,7 @@ function createTreeRow(label, expanded, hasChildren, onToggle) {
     btn.setAttribute("aria-label", expanded ? "Collapse" : "Expand");
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
+      // Second rapid click on the same control is still `click` with detail 2 (double-click pair); must toggle.
       onToggle();
     });
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -717,8 +747,16 @@ function createTreeRow(label, expanded, hasChildren, onToggle) {
     btn.setAttribute("aria-hidden", "true");
   }
   const span = document.createElement("span");
-  span.className = "min-w-0 truncate";
+  span.className =
+    "min-w-0 flex-1 cursor-pointer select-none truncate";
   span.textContent = label;
+  if (hasChildren) {
+    span.addEventListener("click", (e) => {
+      e.stopPropagation();
+      // Same as chevron: rapid successive clicks on one row use detail 2 for the second click.
+      onToggle();
+    });
+  }
   row.appendChild(btn);
   row.appendChild(span);
   return row;
@@ -2522,6 +2560,236 @@ function renderDbTreeInto(parentUl, profile) {
 }
 
 /**
+ * Rebuilds only the database object tree for one connection (avoids full `#connections-list` rebuild).
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @returns {boolean}
+ */
+function refreshConnectionObjectTree(profile) {
+  const list = document.getElementById("connections-list");
+  if (!list) return false;
+  const li = list.querySelector(
+    `li[data-connection-id="${CSS.escape(profile.id)}"]`,
+  );
+  if (!li) return false;
+  if (!openConnectionIds.has(profile.id)) return false;
+  if (objectTreeCollapsedByConnectionId.has(profile.id)) return false;
+  const existing = li.querySelector('ul[aria-label="Database objects"]');
+  const nested = document.createElement("ul");
+  nested.className =
+    "mt-0.5 ml-2 border-l border-stone-200/80 pl-2 [content-visibility:auto]";
+  nested.setAttribute("aria-label", "Database objects");
+  renderDbTreeInto(nested, profile);
+  if (existing) existing.replaceWith(nested);
+  else li.appendChild(nested);
+  return true;
+}
+
+/**
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ */
+function renderAfterTreeToggle(profile) {
+  if (!refreshConnectionObjectTree(profile)) {
+    renderConnections(lastConnections);
+  }
+}
+
+/**
+ * @param {HTMLUListElement} ulN
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @param {string} schemaName
+ * @param {string} key
+ * @param {string[]} objs
+ * @param {number} start
+ * @param {number} end
+ */
+function appendRelationLeafRange(
+  ulN,
+  profile,
+  schemaName,
+  key,
+  objs,
+  start,
+  end,
+) {
+  for (let i = start; i < end; i++) {
+    const n = objs[i];
+    const liN = document.createElement("li");
+    if (PREVIEWABLE_REL_KINDS.has(key)) {
+      liN.appendChild(
+        createPreviewableRelationLeafRow(
+          profile,
+          schemaName,
+          n,
+          /** @type {"tables"|"views"|"materialized_views"} */ (key),
+        ),
+      );
+    } else {
+      liN.appendChild(createLeafRow(n));
+    }
+    ulN.appendChild(liN);
+  }
+}
+
+/**
+ * @param {HTMLUListElement} ulN
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @param {string} schemaName
+ * @param {string} key
+ * @param {string[]} objs
+ * @param {string} relationPath
+ */
+function fillRelationObjectListContinuation(
+  ulN,
+  profile,
+  schemaName,
+  key,
+  objs,
+  relationPath,
+) {
+  const total = objs.length;
+  const firstEnd = Math.min(RELATION_LEAF_SYNC_FIRST, total);
+  appendRelationLeafRange(ulN, profile, schemaName, key, objs, 0, firstEnd);
+  let i = firstEnd;
+  if (i >= total) {
+    scheduleSilentStaleRefreshIfNeeded(relationPath, profile);
+    return;
+  }
+  const step = () => {
+    const end = Math.min(i + RELATION_LEAF_RAF_CHUNK, total);
+    appendRelationLeafRange(ulN, profile, schemaName, key, objs, i, end);
+    i = end;
+    if (i < total) requestAnimationFrame(step);
+    else scheduleSilentStaleRefreshIfNeeded(relationPath, profile);
+  };
+  requestAnimationFrame(step);
+}
+
+/**
+ * @param {HTMLUListElement} ulN
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @param {string} schemaName
+ * @param {string} key
+ * @param {string[]} objs
+ * @param {number} initial
+ * @param {string} relationPath
+ */
+function appendShowMoreRelationRow(
+  ulN,
+  profile,
+  schemaName,
+  key,
+  objs,
+  initial,
+  relationPath,
+) {
+  const remaining = objs.length - initial;
+  const liBtn = document.createElement("li");
+  liBtn.className = "rounded px-1 py-0.5 pl-2";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className =
+    "rounded border border-stone-200/90 bg-[#f3efe6] px-2 py-0.5 text-xs text-stone-700 hover:bg-stone-200/80";
+  btn.textContent = `Show more (${remaining} remaining)`;
+  btn.setAttribute("aria-label", `Show ${remaining} more objects`);
+  btn.addEventListener("click", () => {
+    liBtn.remove();
+    fillRelationObjectListContinuation(
+      ulN,
+      profile,
+      schemaName,
+      key,
+      objs.slice(initial),
+      relationPath,
+    );
+  });
+  liBtn.appendChild(btn);
+  ulN.appendChild(liBtn);
+  scheduleSilentStaleRefreshIfNeeded(relationPath, profile);
+}
+
+/**
+ * @param {HTMLUListElement} ulN
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @param {string} schemaName
+ * @param {string} key
+ * @param {string[]} objs
+ * @param {string} relationPath
+ */
+function fillRelationObjectList(
+  ulN,
+  profile,
+  schemaName,
+  key,
+  objs,
+  relationPath,
+) {
+  if (objs.length === 0) {
+    const liL = document.createElement("li");
+    liL.className =
+      "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
+    liL.textContent = "(no items)";
+    ulN.appendChild(liL);
+    scheduleSilentStaleRefreshIfNeeded(relationPath, profile);
+    return;
+  }
+
+  if (objs.length <= RELATION_LIST_SHOW_MORE_TOTAL) {
+    const total = objs.length;
+    const firstEnd = Math.min(RELATION_LEAF_SYNC_FIRST, total);
+    appendRelationLeafRange(ulN, profile, schemaName, key, objs, 0, firstEnd);
+    let i = firstEnd;
+    if (i >= total) {
+      scheduleSilentStaleRefreshIfNeeded(relationPath, profile);
+      return;
+    }
+    const step = () => {
+      const end = Math.min(i + RELATION_LEAF_RAF_CHUNK, total);
+      appendRelationLeafRange(ulN, profile, schemaName, key, objs, i, end);
+      i = end;
+      if (i < total) requestAnimationFrame(step);
+      else scheduleSilentStaleRefreshIfNeeded(relationPath, profile);
+    };
+    requestAnimationFrame(step);
+    return;
+  }
+
+  const initial = RELATION_SHOW_MORE_INITIAL_VISIBLE;
+  const firstEnd = Math.min(RELATION_LEAF_SYNC_FIRST, initial);
+  appendRelationLeafRange(ulN, profile, schemaName, key, objs, 0, firstEnd);
+  let i = firstEnd;
+  if (i >= initial) {
+    appendShowMoreRelationRow(
+      ulN,
+      profile,
+      schemaName,
+      key,
+      objs,
+      initial,
+      relationPath,
+    );
+    return;
+  }
+  const stepToInitial = () => {
+    const end = Math.min(i + RELATION_LEAF_RAF_CHUNK, initial);
+    appendRelationLeafRange(ulN, profile, schemaName, key, objs, i, end);
+    i = end;
+    if (i < initial) requestAnimationFrame(stepToInitial);
+    else {
+      appendShowMoreRelationRow(
+        ulN,
+        profile,
+        schemaName,
+        key,
+        objs,
+        initial,
+        relationPath,
+      );
+    }
+  };
+  requestAnimationFrame(stepToInitial);
+}
+
+/**
  * @param {HTMLUListElement} ul
  * @param {import("./appConfig.js").ConnectionProfile} profile
  * @param {string} schemaName
@@ -2582,23 +2850,7 @@ function appendSchemaSubtree(ul, profile, schemaName, isSystem) {
             ulN.appendChild(liL);
             scheduleSilentStaleRefreshIfNeeded(p, profile);
           } else {
-            for (const n of objs) {
-              const liN = document.createElement("li");
-              if (PREVIEWABLE_REL_KINDS.has(key)) {
-                liN.appendChild(
-                  createPreviewableRelationLeafRow(
-                    profile,
-                    schemaName,
-                    n,
-                    /** @type {"tables"|"views"|"materialized_views"} */ (key),
-                  ),
-                );
-              } else {
-                liN.appendChild(createLeafRow(n));
-              }
-              ulN.appendChild(liN);
-            }
-            scheduleSilentStaleRefreshIfNeeded(p, profile);
+            fillRelationObjectList(ulN, profile, schemaName, key, objs, p);
           }
         }
         liG.appendChild(ulN);
@@ -2827,13 +3079,27 @@ function syncConnectionActionButtons() {
  * @param {import("./appConfig.js").ConnectionProfile[]} connections
  */
 function renderConnections(connections) {
+  lastConnections = connections;
+  if (connectionsUiFlushScheduled) return;
+  connectionsUiFlushScheduled = true;
+  queueMicrotask(() => {
+    connectionsUiFlushScheduled = false;
+    flushConnectionsUi();
+  });
+}
+
+/**
+ * Rebuilds the sidebar connection list and object tree. Prefer {@link renderConnections} so
+ * multiple updates in one turn coalesce and do not block the main thread back-to-back.
+ * Long tasks here (large `replaceChildren` + relation lists) block pointer input until complete; use Performance to verify.
+ */
+function flushConnectionsUi() {
+  const connections = lastConnections;
   const list = document.getElementById("connections-list");
   if (!list) return;
 
   cancelAnimationFrame(pendingSelectionRafId);
   pendingSelectionRafId = 0;
-
-  lastConnections = connections;
 
   for (const id of [...openConnectionIds]) {
     if (!connections.some((c) => c.id === id)) {
@@ -2928,7 +3194,8 @@ function renderConnections(connections) {
 
     if (treeVisible) {
       const nested = document.createElement("ul");
-      nested.className = "mt-0.5 ml-2 border-l border-stone-200/80 pl-2";
+      nested.className =
+        "mt-0.5 ml-2 border-l border-stone-200/80 pl-2 [content-visibility:auto]";
       nested.setAttribute("aria-label", "Database objects");
       renderDbTreeInto(nested, c);
       li.appendChild(nested);
