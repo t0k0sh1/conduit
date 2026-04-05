@@ -499,6 +499,9 @@ let lastConnections = [];
 /** True while {@link expandAllExplorerTree} is running (disables expand/collapse controls). */
 let explorerExpandAllInFlight = false;
 
+/** True while {@link refreshExplorerTree} is running. */
+let explorerRefreshInFlight = false;
+
 /** Object-kind folders under each schema (matches Rust `parse_relation_kind`). */
 const KIND_GROUPS = [
   { key: "tables", label: "Tables" },
@@ -3565,20 +3568,30 @@ function hasExplorerExpandTargets() {
 function syncExplorerTreeActionButtons() {
   const expandBtn = document.getElementById("explorer-expand-all-btn");
   const collapseBtn = document.getElementById("explorer-collapse-all-btn");
+  const refreshBtn = document.getElementById("explorer-refresh-btn");
   const noConnections = lastConnections.length === 0;
   const canExpand =
     !noConnections &&
     hasExplorerExpandTargets() &&
-    !explorerExpandAllInFlight;
+    !explorerExpandAllInFlight &&
+    !explorerRefreshInFlight;
   const canCollapse =
     !noConnections &&
     expandedTreePaths.size > 0 &&
-    !explorerExpandAllInFlight;
+    !explorerExpandAllInFlight &&
+    !explorerRefreshInFlight;
+  const canRefresh =
+    hasExplorerExpandTargets() &&
+    !explorerExpandAllInFlight &&
+    !explorerRefreshInFlight;
   if (expandBtn instanceof HTMLButtonElement) {
     expandBtn.disabled = !canExpand;
   }
   if (collapseBtn instanceof HTMLButtonElement) {
     collapseBtn.disabled = !canCollapse;
+  }
+  if (refreshBtn instanceof HTMLButtonElement) {
+    refreshBtn.disabled = !canRefresh;
   }
 }
 
@@ -3588,6 +3601,67 @@ function collapseAllExplorerPaths() {
   }
   setStatusMessage("Ready");
   renderConnections(lastConnections);
+}
+
+/**
+ * Clears metadata cache for open explorer connections and re-fetches expanded tree paths.
+ */
+async function refreshExplorerTree() {
+  const targets = lastConnections.filter(
+    (c) =>
+      openConnectionIds.has(c.id) &&
+      !objectTreeCollapsedByConnectionId.has(c.id),
+  );
+  if (targets.length === 0) {
+    setStatusMessage("Open a data source and show its tree first.");
+    return;
+  }
+  if (explorerRefreshInFlight || explorerExpandAllInFlight) return;
+
+  const refreshBtn = document.getElementById("explorer-refresh-btn");
+  explorerRefreshInFlight = true;
+  if (refreshBtn instanceof HTMLButtonElement) {
+    refreshBtn.setAttribute("aria-busy", "true");
+  }
+  syncExplorerTreeActionButtons();
+  setStatusMessage("Refreshing…");
+  try {
+    const targetIds = new Set(targets.map((t) => t.id));
+    for (const profile of targets) {
+      pruneCacheForConnection(profile.id);
+    }
+    const pathsToRefresh = [...expandedTreePaths].filter((p) => {
+      const id = p.split("::")[0];
+      return targetIds.has(id);
+    });
+    for (const path of pathsToRefresh) {
+      errorsByPath.delete(path);
+    }
+    await Promise.all(
+      pathsToRefresh.map(async (path) => {
+        const id = path.split("::")[0];
+        const profile = lastConnections.find((c) => c.id === id);
+        if (!profile) return;
+        try {
+          await ensureLoaded(path, profile);
+        } catch (e) {
+          errorsByPath.set(path, formatConnectionFailureMessage(e));
+        }
+      }),
+    );
+    setStatusMessage("Ready");
+  } catch (e) {
+    setStatusMessage(
+      e instanceof Error ? e.message : "Could not refresh the tree.",
+    );
+  } finally {
+    explorerRefreshInFlight = false;
+    if (refreshBtn instanceof HTMLButtonElement) {
+      refreshBtn.removeAttribute("aria-busy");
+    }
+    syncExplorerTreeActionButtons();
+    renderConnections(lastConnections);
+  }
 }
 
 /**
@@ -3603,7 +3677,7 @@ async function expandAllExplorerTree() {
     setStatusMessage("Open a data source and show its tree first.");
     return;
   }
-  if (explorerExpandAllInFlight) return;
+  if (explorerExpandAllInFlight || explorerRefreshInFlight) return;
   explorerExpandAllInFlight = true;
   syncExplorerTreeActionButtons();
   setStatusMessage("Expanding tree…");
@@ -4174,6 +4248,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     "click",
     () => {
       collapseAllExplorerPaths();
+    },
+  );
+  document.getElementById("explorer-refresh-btn")?.addEventListener(
+    "click",
+    () => {
+      void refreshExplorerTree();
     },
   );
 
