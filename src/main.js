@@ -8,6 +8,9 @@ import {
   fetchExtensions,
   fetchRelationObjects,
   fetchTablePreview,
+  executePgSql,
+  parsePgExecutionError,
+  formatPgExecutionErrorMessage,
   getCachedUserSchemas,
   getCachedSystemSchemas,
   getCachedExtensions,
@@ -89,6 +92,9 @@ let nextTablePreviewTabSeq = 1;
  *   tabLabel: string;
  *   panelEl: HTMLElement;
  *   textareaEl: HTMLTextAreaElement;
+ *   runBtn: HTMLButtonElement;
+ *   resultMetaEl: HTMLElement;
+ *   resultBodyEl: HTMLElement;
  * }} SqlQueryTab
  */
 
@@ -431,17 +437,70 @@ function createSqlQueryPanelElements(tabId) {
   panelEl.className =
     "flex h-full min-h-[8rem] min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-stone-200/90 bg-[#fffcf7]/90 shadow-sm shadow-stone-200/40";
 
+  const toolbar = document.createElement("div");
+  toolbar.className =
+    "flex shrink-0 items-center gap-2 border-b border-stone-200/80 bg-[#faf8f4]/90 px-2 py-1.5";
+
+  const runBtn = document.createElement("button");
+  runBtn.type = "button";
+  runBtn.id = `sql-editor-run-${tabId}`;
+  runBtn.className =
+    "rounded border border-stone-300/90 bg-stone-100/90 px-2.5 py-1 text-xs font-medium text-stone-800 hover:bg-stone-200/90 disabled:cursor-not-allowed disabled:opacity-50";
+  runBtn.textContent = "Run";
+  runBtn.title =
+    "Run SQL: selected text if highlighted, otherwise the whole editor (⌘ Enter or Ctrl+Enter)";
+  runBtn.setAttribute("aria-label", "Run SQL");
+
+  toolbar.appendChild(runBtn);
+
+  const editorWrap = document.createElement("div");
+  editorWrap.className = "flex min-h-0 flex-1 flex-col";
+
   const textareaEl = document.createElement("textarea");
   textareaEl.id = `sql-editor-textarea-${tabId}`;
   textareaEl.className =
-    "min-h-0 w-full flex-1 resize-none select-text rounded-b-md border-0 bg-transparent p-3 font-mono text-sm text-stone-800 outline-none ring-0 placeholder:text-stone-400";
+    "min-h-0 w-full flex-1 resize-none select-text border-0 bg-transparent p-3 font-mono text-sm text-stone-800 outline-none ring-0 placeholder:text-stone-400";
   textareaEl.setAttribute("aria-label", "SQL query");
   textareaEl.placeholder = "";
   textareaEl.rows = 1;
 
-  panelEl.appendChild(textareaEl);
+  editorWrap.appendChild(textareaEl);
 
-  return { panelEl, textareaEl };
+  const resultWrap = document.createElement("div");
+  resultWrap.className =
+    "flex min-h-[6rem] flex-1 flex-col min-h-0 border-t border-stone-200/80 bg-[#faf8f4]/50";
+
+  const resultMetaEl = document.createElement("div");
+  resultMetaEl.id = `sql-editor-result-meta-${tabId}`;
+  resultMetaEl.className =
+    "shrink-0 border-b border-stone-200/60 px-3 py-1.5 text-xs text-stone-500";
+  resultMetaEl.textContent = "No results yet.";
+
+  const resultBodyEl = document.createElement("div");
+  resultBodyEl.id = `sql-editor-result-body-${tabId}`;
+  resultBodyEl.className = "min-h-0 flex-1 overflow-auto";
+  resultBodyEl.setAttribute("role", "region");
+  resultBodyEl.setAttribute("aria-label", "SQL result");
+
+  resultWrap.appendChild(resultMetaEl);
+  resultWrap.appendChild(resultBodyEl);
+
+  panelEl.appendChild(toolbar);
+  panelEl.appendChild(editorWrap);
+  panelEl.appendChild(resultWrap);
+
+  runBtn.addEventListener("click", () => {
+    void runSqlQueryForTab(tabId);
+  });
+
+  textareaEl.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    if (!(e.metaKey || e.ctrlKey)) return;
+    e.preventDefault();
+    void runSqlQueryForTab(tabId);
+  });
+
+  return { panelEl, textareaEl, runBtn, resultMetaEl, resultBodyEl };
 }
 
 function syncTabPanelVisibility() {
@@ -957,7 +1016,8 @@ function closeSqlQueryTab(tabId) {
  */
 function openNewSqlQueryTab(profile, opts) {
   const tabId = `sqlq-${nextSqlQueryTabSeq++}`;
-  const { panelEl, textareaEl } = createSqlQueryPanelElements(tabId);
+  const { panelEl, textareaEl, runBtn, resultMetaEl, resultBodyEl } =
+    createSqlQueryPanelElements(tabId);
 
   const panelsRoot = document.getElementById("sql-editor-panels");
   if (!panelsRoot) return;
@@ -972,6 +1032,9 @@ function openNewSqlQueryTab(profile, opts) {
     tabLabel: opts.tabLabel,
     panelEl,
     textareaEl,
+    runBtn,
+    resultMetaEl,
+    resultBodyEl,
   };
   sqlQueryTabs.push(tab);
   activeSqlQueryTabId = tabId;
@@ -1299,6 +1362,196 @@ function formatTableCellPreview(value) {
     return { type: "text", text: JSON.stringify(value) };
   }
   return { type: "text", text: String(value) };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ type: "null" } | { type: "text"; text: string }}
+ */
+function formatSqlResultCell(value) {
+  if (value === null || value === undefined) {
+    return { type: "null" };
+  }
+  if (typeof value === "object") {
+    return { type: "text", text: JSON.stringify(value) };
+  }
+  return { type: "text", text: String(value) };
+}
+
+/**
+ * @param {HTMLElement} container
+ * @param {string[]} columns
+ * @param {unknown[][]} rows
+ */
+function renderSqlRowsTable(container, columns, rows) {
+  const table = document.createElement("table");
+  table.className =
+    "min-w-full w-max border-collapse text-left text-xs text-stone-800";
+
+  const thead = document.createElement("thead");
+  const trh = document.createElement("tr");
+  for (const col of columns) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.className =
+      "sticky top-0 border-b border-stone-200/90 bg-[#fffcf7] px-2 py-2 font-medium text-stone-700";
+    th.textContent = col;
+    trh.appendChild(th);
+  }
+  thead.appendChild(trh);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.className = "border-b border-stone-100/90";
+    for (let c = 0; c < columns.length; c++) {
+      const td = document.createElement("td");
+      td.className = "max-w-[24rem] whitespace-pre-wrap break-words px-2 py-1.5 align-top";
+      const cell = formatSqlResultCell(row[c]);
+      if (cell.type === "null") {
+        const span = document.createElement("span");
+        span.className = "italic text-stone-400";
+        span.textContent = "NULL";
+        td.appendChild(span);
+      } else {
+        td.appendChild(document.createTextNode(cell.text));
+      }
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  container.appendChild(table);
+}
+
+/**
+ * @param {HTMLElement} bodyEl
+ * @param {HTMLElement | null} metaEl
+ * @param {string} message
+ */
+function renderSqlExecutionError(bodyEl, metaEl, message) {
+  if (metaEl) metaEl.textContent = "";
+  if (!bodyEl) return;
+  bodyEl.className = "min-h-0 flex-1 overflow-auto p-3 text-xs select-text";
+  bodyEl.replaceChildren();
+  const p = document.createElement("p");
+  p.className = "text-red-600 whitespace-pre-wrap";
+  p.textContent = message;
+  bodyEl.appendChild(p);
+}
+
+/**
+ * @param {HTMLElement} bodyEl
+ * @param {HTMLElement | null} metaEl
+ * @param {{
+ *   statements: Array<
+ *     | { kind: "rows"; columns: string[]; rows: unknown[][] }
+ *     | { kind: "command"; rowsAffected: number }
+ *   >;
+ * }} data
+ */
+function renderSqlExecutionResult(bodyEl, metaEl, data) {
+  const n = data.statements.length;
+  if (metaEl) {
+    metaEl.textContent =
+      n === 1 ? "1 statement completed" : `${n} statements completed`;
+  }
+  if (!bodyEl) return;
+  bodyEl.className = "min-h-0 flex-1 overflow-auto p-3 text-xs select-text";
+  bodyEl.replaceChildren();
+
+  let idx = 0;
+  for (const st of data.statements) {
+    idx += 1;
+    const sec = document.createElement("div");
+    sec.className = idx > 1 ? "mt-6 border-t border-stone-200/80 pt-4" : "";
+
+    if (st.kind === "command") {
+      const p = document.createElement("p");
+      p.className = "font-mono text-stone-700";
+      p.textContent = `Statement ${idx}: ${st.rowsAffected} row(s) affected.`;
+      sec.appendChild(p);
+    } else {
+      const h = document.createElement("div");
+      h.className = "mb-2 text-stone-500";
+      h.textContent = `Statement ${idx}: ${st.rows.length} row(s)`;
+      sec.appendChild(h);
+      renderSqlRowsTable(sec, st.columns, st.rows);
+    }
+    bodyEl.appendChild(sec);
+  }
+}
+
+/**
+ * If the user has a non-collapsed selection, returns that range (trimmed); otherwise the full editor text (trimmed).
+ * @param {HTMLTextAreaElement} el
+ * @returns {string}
+ */
+function getSqlToRunFromEditor(el) {
+  const { selectionStart, selectionEnd, value } = el;
+  if (selectionStart !== selectionEnd) {
+    return value.slice(selectionStart, selectionEnd).trim();
+  }
+  return value.trim();
+}
+
+/**
+ * @param {string} tabId
+ */
+async function runSqlQueryForTab(tabId) {
+  const tab = sqlQueryTabs.find((t) => t.id === tabId);
+  if (!tab) return;
+  const profile = lastConnections.find((c) => c.id === tab.connectionId);
+  if (!profile) {
+    setStatusMessage("Connection not found.");
+    return;
+  }
+  if (!openConnectionIds.has(tab.connectionId)) {
+    setStatusMessage("Open the database connection first.");
+    return;
+  }
+  const sql = getSqlToRunFromEditor(tab.textareaEl);
+  if (!sql) {
+    setStatusMessage("Enter SQL to run.");
+    return;
+  }
+  if (shouldPromptForSessionPassword(profile)) {
+    const pw = await waitForSessionPassword(profile);
+    if (pw === null) return;
+    setSessionPassword(profile.id, pw);
+  }
+
+  tab.runBtn.disabled = true;
+  tab.runBtn.setAttribute("aria-busy", "true");
+  tab.resultMetaEl.textContent = "Running…";
+  tab.resultBodyEl.replaceChildren();
+  tab.resultBodyEl.appendChild(document.createTextNode("Running…"));
+  setStatusMessage("Running SQL…");
+
+  try {
+    const result = await executePgSql(profile, sql);
+    pruneCacheForConnection(profile.id);
+    const still = sqlQueryTabs.find((t) => t.id === tabId);
+    if (!still) return;
+    renderSqlExecutionResult(still.resultBodyEl, still.resultMetaEl, result);
+    setStatusMessage("Ready");
+  } catch (e) {
+    const still = sqlQueryTabs.find((t) => t.id === tabId);
+    if (!still) return;
+    const parsed = parsePgExecutionError(e);
+    const msg = parsed
+      ? formatPgExecutionErrorMessage(parsed)
+      : formatConnectionFailureMessage(e);
+    renderSqlExecutionError(still.resultBodyEl, still.resultMetaEl, msg);
+    setStatusMessage(msg);
+  } finally {
+    const still = sqlQueryTabs.find((t) => t.id === tabId);
+    if (still) {
+      still.runBtn.disabled = false;
+      still.runBtn.removeAttribute("aria-busy");
+    }
+  }
 }
 
 /**

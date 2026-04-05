@@ -268,3 +268,108 @@ export async function fetchTablePreview(profile, schema, table, options = {}) {
     limit: options.limit,
   });
 }
+
+/**
+ * Runs arbitrary SQL (including multiple statements) against the given profile.
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @param {string} sql
+ * @returns {Promise<{ statements: Array<
+ *   | { kind: "rows"; columns: string[]; rows: unknown[][] }
+ *   | { kind: "command"; rowsAffected: number }
+ * > }>}
+ */
+export async function executePgSql(profile, sql) {
+  const invoke = getInvoke();
+  if (!invoke) {
+    throw new Error("Database metadata is only available in the desktop app.");
+  }
+  return await invoke("pg_execute_sql", {
+    params: profileToParams(profile),
+    sql,
+  });
+}
+
+export const PG_JSON_PREFIX = "PG_JSON:";
+
+/**
+ * @param {unknown} err
+ * @returns {string}
+ */
+function extractInvokeErrorMessage(err) {
+  if (err == null) return "";
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message;
+  if (typeof err === "object" && err !== null && "message" in err) {
+    const m = /** @type {Record<string, unknown>} */ (err).message;
+    if (typeof m === "string") return m;
+  }
+  return String(err);
+}
+
+/**
+ * Parses structured SQL execution errors returned from `pg_execute_sql` (`PG_JSON:` prefix).
+ * @param {unknown} err
+ * @returns {{
+ *   category: string;
+ *   sqlState?: string;
+ *   message: string;
+ *   detail?: string;
+ *   hint?: string;
+ *   position?: number;
+ * } | null}
+ */
+export function parsePgExecutionError(err) {
+  const raw = extractInvokeErrorMessage(err);
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const jsonStart = raw.indexOf(PG_JSON_PREFIX);
+  if (jsonStart === -1) {
+    return null;
+  }
+  const jsonText = raw.slice(jsonStart + PG_JSON_PREFIX.length);
+  try {
+    const parsed = JSON.parse(jsonText);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof /** @type {{ message?: unknown }} */ (parsed).message === "string" &&
+      typeof /** @type {{ category?: unknown }} */ (parsed).category === "string"
+    ) {
+      return /** @type {NonNullable<ReturnType<typeof parsePgExecutionError>>} */ (parsed);
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+/**
+ * @param {{
+ *   category: string;
+ *   sqlState?: string;
+ *   message: string;
+ *   detail?: string;
+ *   hint?: string;
+ *   position?: number;
+ * }} p
+ */
+export function formatPgExecutionErrorMessage(p) {
+  let head;
+  if (p.sqlState) {
+    head = `PostgreSQL error (${p.sqlState})`;
+  } else if (p.category === "connection") {
+    head = "Connection error";
+  } else if (p.category === "authentication") {
+    head = "Authentication error";
+  } else if (p.category === "query") {
+    head = "Query error";
+  } else {
+    head = `Database error (${p.category})`;
+  }
+  const lines = [head, p.message];
+  if (p.detail) lines.push(`Detail: ${p.detail}`);
+  if (p.hint) lines.push(`Hint: ${p.hint}`);
+  if (p.position != null) lines.push(`Position: ${p.position}`);
+  return lines.join("\n");
+}
