@@ -5,7 +5,29 @@
  */
 
 /** @typedef {{ sidebarOpen: boolean, sidebarWidthPx: number }} UiSettings */
-/** @typedef {{ id: string, label: string, host: string, port: number, database: string, user: string, password: string, savePasswordInProfile: boolean }} ConnectionProfile */
+/**
+ * @typedef {{
+ *   kind: 'default';
+ * } | {
+ *   kind: 'all';
+ * } | {
+ *   kind: 'selected';
+ *   schemas: string[];
+ * }} UserSchemaVisibility
+ */
+/**
+ * @typedef {{
+ *   id: string;
+ *   label: string;
+ *   host: string;
+ *   port: number;
+ *   database: string;
+ *   user: string;
+ *   password: string;
+ *   savePasswordInProfile: boolean;
+ *   userSchemaVisibility?: UserSchemaVisibility;
+ * }} ConnectionProfile
+ */
 /** @typedef {{ ui: UiSettings, connections: ConnectionProfile[] }} AppConfig */
 
 export const COMMANDS = {

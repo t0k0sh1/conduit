@@ -12,8 +12,10 @@ import {
   getCachedExtensions,
   getCachedRelations,
   getCachedSystemSchemas,
-  getCachedUserSchemas,
+  getCachedUserSchemasSnapshot,
   isPgCacheStale,
+  PG_USER_SCHEMAS_CACHE_KEY,
+  resolveVisibleUserSchemas,
   parsePgExecutionError,
   pruneCacheForConnection,
   setSessionPassword,
@@ -567,6 +569,340 @@ function pruneExpandedPathsForConnection(connectionId) {
 }
 
 /**
+ * @param {string} connectionId
+ * @param {Set<string>} visibleUserSchemaNames
+ */
+function pruneExpandedPathsForHiddenUserSchemas(connectionId, visibleUserSchemaNames) {
+  const prefix = `${connectionId}::schema::`;
+  for (const p of [...expandedTreePaths]) {
+    if (!p.startsWith(prefix)) continue;
+    const parts = p.split("::");
+    if (parts.length >= 3 && parts[1] === "schema") {
+      if (!visibleUserSchemaNames.has(parts[2])) expandedTreePaths.delete(p);
+    }
+  }
+  for (const k of [...errorsByPath.keys()]) {
+    if (!k.startsWith(prefix)) continue;
+    const parts = k.split("::");
+    if (parts.length >= 3 && parts[1] === "schema") {
+      if (!visibleUserSchemaNames.has(parts[2])) errorsByPath.delete(k);
+    }
+  }
+  for (const k of [...loadingPaths]) {
+    if (!k.startsWith(prefix)) continue;
+    const parts = k.split("::");
+    if (parts.length >= 3 && parts[1] === "schema") {
+      if (!visibleUserSchemaNames.has(parts[2])) loadingPaths.delete(k);
+    }
+  }
+  for (const k of [...silentStaleRefreshInFlight]) {
+    if (!k.startsWith(prefix)) continue;
+    const parts = k.split("::");
+    if (parts.length >= 3 && parts[1] === "schema") {
+      if (!visibleUserSchemaNames.has(parts[2])) silentStaleRefreshInFlight.delete(k);
+    }
+  }
+}
+
+/** @type {(() => void) | null} */
+let closeSchemaVisibilityPopover = null;
+
+function closeActiveSchemaVisibilityPopover() {
+  if (closeSchemaVisibilityPopover) {
+    closeSchemaVisibilityPopover();
+    closeSchemaVisibilityPopover = null;
+  }
+}
+
+/**
+ * @param {HTMLButtonElement} anchorEl
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @param {{ schemaNames: string[]; defaultSchema: string }} snapshot
+ */
+function openSchemaVisibilityPopover(anchorEl, profile, snapshot) {
+  closeActiveSchemaVisibilityPopover();
+
+  const panel = document.createElement("div");
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", "Select schemas to show");
+  panel.className =
+    "fixed z-[200] max-h-[min(24rem,70vh)] w-[min(18rem,calc(100vw-1rem))] overflow-y-auto rounded border border-stone-200/90 bg-[#fffcf7] p-2 text-sm text-stone-800 shadow-lg shadow-stone-300/30";
+
+  const form = document.createElement("form");
+  form.autocomplete = "off";
+  form.className = "flex flex-col gap-2";
+  form.addEventListener("submit", (e) => e.preventDefault());
+
+  const names = snapshot.schemaNames;
+  const def = snapshot.defaultSchema;
+
+  const allId = `schema-vis-all-${profile.id}`;
+  const allRow = document.createElement("div");
+  allRow.className = "flex items-center gap-2";
+  const allCb = document.createElement("input");
+  allCb.type = "checkbox";
+  allCb.id = allId;
+  const allLabel = document.createElement("label");
+  allLabel.htmlFor = allId;
+  allLabel.className = "cursor-pointer select-none text-stone-800";
+  allLabel.textContent = "All schemas";
+  allRow.appendChild(allCb);
+  allRow.appendChild(allLabel);
+  form.appendChild(allRow);
+
+  /** @type {HTMLInputElement[]} */
+  const schemaCbs = [];
+  for (const name of names) {
+    const row = document.createElement("div");
+    row.className = "flex items-center gap-2 pl-1";
+    const id = `schema-vis-${profile.id}-${name.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.id = id;
+    schemaCbs.push(cb);
+    const lab = document.createElement("label");
+    lab.htmlFor = id;
+    lab.className = "min-w-0 flex-1 cursor-pointer select-none truncate text-stone-700";
+    lab.textContent = name === def ? `${name} (default)` : name;
+    row.appendChild(cb);
+    row.appendChild(lab);
+    form.appendChild(row);
+  }
+
+  function syncAllFromProfile() {
+    const vis = profile.userSchemaVisibility;
+    if (!vis || vis.kind === "default") {
+      allCb.checked = false;
+      allCb.indeterminate = false;
+      for (let i = 0; i < names.length; i++) {
+        schemaCbs[i].checked = names[i] === def;
+      }
+      return;
+    }
+    if (vis.kind === "all") {
+      allCb.checked = true;
+      allCb.indeterminate = false;
+      for (let i = 0; i < schemaCbs.length; i++) {
+        schemaCbs[i].checked = true;
+      }
+      return;
+    }
+    const set = new Set(vis.schemas);
+    let count = 0;
+    for (let i = 0; i < names.length; i++) {
+      const on = set.has(names[i]);
+      schemaCbs[i].checked = on;
+      if (on) count += 1;
+    }
+    allCb.checked = count === names.length && names.length > 0;
+    allCb.indeterminate = count > 0 && count < names.length;
+  }
+
+  syncAllFromProfile();
+
+  function syncAllCheckboxMeta() {
+    let count = 0;
+    for (let i = 0; i < schemaCbs.length; i++) {
+      if (schemaCbs[i].checked) count += 1;
+    }
+    allCb.checked = count === names.length && names.length > 0;
+    allCb.indeterminate = count > 0 && count < names.length;
+  }
+
+  allCb.addEventListener("change", () => {
+    if (allCb.checked) {
+      for (const cb of schemaCbs) cb.checked = true;
+      allCb.indeterminate = false;
+    } else {
+      for (let i = 0; i < schemaCbs.length; i++) {
+        schemaCbs[i].checked = names[i] === def;
+      }
+      syncAllCheckboxMeta();
+    }
+  });
+  for (const cb of schemaCbs) {
+    cb.addEventListener("change", () => {
+      if (!cb.checked) allCb.checked = false;
+      syncAllCheckboxMeta();
+    });
+  }
+
+  const footer = document.createElement("div");
+  footer.className = "border-t border-stone-200/80 pt-2 text-[0.65rem] leading-snug text-stone-500";
+  footer.textContent = "Press Enter or click outside to apply.";
+  form.appendChild(footer);
+
+  panel.appendChild(form);
+  document.body.appendChild(panel);
+
+  const rect = anchorEl.getBoundingClientRect();
+  const pad = 8;
+  let left = rect.left;
+  let top = rect.bottom + 4;
+  const pw = panel.offsetWidth;
+  const ph = panel.offsetHeight;
+  if (left + pw > window.innerWidth - pad) {
+    left = Math.max(pad, window.innerWidth - pw - pad);
+  }
+  if (top + ph > window.innerHeight - pad) {
+    top = Math.max(pad, rect.top - ph - 4);
+  }
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
+
+  function deriveVisibility() {
+    if (allCb.checked) {
+      return /** @type {const} */ ({ kind: "all" });
+    }
+    const picked = names.filter((n, i) => schemaCbs[i].checked);
+    if (picked.length === 1 && picked[0] === def) {
+      return /** @type {const} */ ({ kind: "default" });
+    }
+    return /** @type {const} */ ({ kind: "selected", schemas: picked });
+  }
+
+  function applyAndClose() {
+    const visibility = deriveVisibility();
+    const visibleSet = new Set(
+      resolveVisibleUserSchemas(snapshot, {
+        ...profile,
+        userSchemaVisibility: visibility,
+      }),
+    );
+    void updateAppConfig((c) => {
+      const p = c.connections.find((x) => x.id === profile.id);
+      if (p) p.userSchemaVisibility = visibility;
+    })
+      .then((next) => {
+        cleanup();
+        pruneExpandedPathsForHiddenUserSchemas(profile.id, visibleSet);
+        renderConnections(next.connections);
+      })
+      .catch((e) => {
+        setStatusMessage(
+          e instanceof Error ? e.message : "Could not save schema visibility.",
+        );
+      });
+  }
+
+  /** @param {KeyboardEvent} e */
+  function onDocKeyDown(e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      cleanup();
+    } else if (e.key === "Enter" && panel.contains(document.activeElement)) {
+      e.preventDefault();
+      applyAndClose();
+    }
+  }
+
+  /** @param {PointerEvent} e */
+  function onDocPointerDown(e) {
+    const t = e.target;
+    if (t instanceof Node) {
+      if (panel.contains(t) || anchorEl.contains(t)) return;
+    }
+    applyAndClose();
+  }
+
+  function cleanup() {
+    document.removeEventListener("keydown", onDocKeyDown, true);
+    document.removeEventListener("pointerdown", onDocPointerDown, true);
+    panel.remove();
+    closeSchemaVisibilityPopover = null;
+  }
+
+  document.addEventListener("keydown", onDocKeyDown, true);
+  document.addEventListener("pointerdown", onDocPointerDown, true);
+  closeSchemaVisibilityPopover = cleanup;
+
+  const first = schemaCbs[0] ?? allCb;
+  first.focus();
+}
+
+/**
+ * @param {string} label
+ * @param {boolean} expanded
+ * @param {boolean} hasChildren
+ * @param {() => void} onToggle
+ * @param {{ visible: number; total: number } | null} badgeState
+ * @param {(anchor: HTMLButtonElement) => void} onBadgeClick
+ */
+function createDatabaseTreeRow(
+  label,
+  expanded,
+  hasChildren,
+  onToggle,
+  badgeState,
+  onBadgeClick,
+) {
+  const row = document.createElement("div");
+  row.className =
+    "flex min-w-0 items-center gap-0.5 rounded px-1 py-0.5 text-stone-700";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className =
+    "flex h-5 w-5 shrink-0 items-center justify-center rounded text-stone-500 hover:bg-stone-200/80 hover:text-stone-800";
+  btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+  if (hasChildren) {
+    btn.setAttribute("aria-label", expanded ? "Collapse" : "Expand");
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onToggle();
+    });
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute(
+      "class",
+      `h-3.5 w-3.5 transition-transform ${expanded ? "rotate-90" : ""}`,
+    );
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "currentColor");
+    svg.setAttribute("aria-hidden", "true");
+    const tri = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    tri.setAttribute("d", "M8 5l8 7-8 7V5z");
+    svg.appendChild(tri);
+    btn.appendChild(svg);
+  } else {
+    btn.classList.add("invisible", "pointer-events-none");
+    btn.setAttribute("tabindex", "-1");
+    btn.setAttribute("aria-hidden", "true");
+  }
+  const labelWrap = document.createElement("div");
+  labelWrap.className =
+    "flex min-w-0 flex-1 items-center gap-1 overflow-hidden";
+  const span = document.createElement("span");
+  span.className =
+    "min-w-0 flex-1 cursor-pointer select-none truncate";
+  span.textContent = label;
+  if (hasChildren) {
+    span.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onToggle();
+    });
+  }
+  labelWrap.appendChild(span);
+  if (badgeState != null) {
+    const badge = document.createElement("button");
+    badge.type = "button";
+    badge.className =
+      "shrink-0 rounded px-0.5 tabular-nums text-[0.65rem] leading-none text-stone-400 hover:bg-stone-200/80 hover:text-stone-700";
+    badge.textContent = `${badgeState.visible} of ${badgeState.total}`;
+    const hint = `Schema visibility: ${badgeState.visible} of ${badgeState.total} shown`;
+    badge.title = hint;
+    badge.setAttribute("aria-label", hint);
+    badge.setAttribute("aria-haspopup", "dialog");
+    badge.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onBadgeClick(badge);
+    });
+    labelWrap.appendChild(badge);
+  }
+  row.appendChild(btn);
+  row.appendChild(labelWrap);
+  return row;
+}
+
+/**
  * @param {string} path
  * @param {import("./appConfig.js").ConnectionProfile} profile
  */
@@ -645,7 +981,7 @@ function isExpandedPathStale(path, profile) {
   const parts = path.split("::");
   if (parts[0] !== id) return false;
   if (path === `${id}::database`)
-    return isPgCacheStale("pg", id, "user-schemas");
+    return isPgCacheStale("pg", id, PG_USER_SCHEMAS_CACHE_KEY);
   if (path === `${id}::system`)
     return isPgCacheStale("pg", id, "system-schemas");
   if (path === `${id}::extensions`)
@@ -2509,13 +2845,27 @@ function renderDbTreeInto(parentUl, profile) {
 
   const databasePath = `${prefix}database`;
   const databaseOpen = expandedTreePaths.has(databasePath);
+  const userSchemasSnap = getCachedUserSchemasSnapshot(id);
   const liDb = document.createElement("li");
   liDb.appendChild(
-    createTreeRow(
+    createDatabaseTreeRow(
       profile.database,
       databaseOpen,
       true,
       () => void toggleTreePath(databasePath, profile),
+      userSchemasSnap && userSchemasSnap.schemaNames.length > 0
+        ? {
+            visible: resolveVisibleUserSchemas(userSchemasSnap, profile).length,
+            total: userSchemasSnap.schemaNames.length,
+          }
+        : null,
+      (anchor) => {
+        const s = getCachedUserSchemasSnapshot(id);
+        if (!s) return;
+        const prof = lastConnections.find((c) => c.id === id);
+        if (!prof) return;
+        openSchemaVisibilityPopover(anchor, prof, s);
+      },
     ),
   );
   if (databaseOpen) {
@@ -2533,17 +2883,18 @@ function renderDbTreeInto(parentUl, profile) {
       li.textContent = errorsByPath.get(databasePath) ?? "";
       ulDb.appendChild(li);
     } else {
-      const names = getCachedUserSchemas(id);
-      if (names === undefined) {
+      const snap = userSchemasSnap;
+      if (snap === undefined) {
         ensureExpandedPathMissingData(databasePath, profile);
-      } else if (names.length === 0) {
+      } else if (snap.schemaNames.length === 0) {
         const li = document.createElement("li");
         li.className = "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
         li.textContent = "(no schemas)";
         ulDb.appendChild(li);
         scheduleSilentStaleRefreshIfNeeded(databasePath, profile);
       } else {
-        for (const schemaName of names) {
+        const visibleNames = resolveVisibleUserSchemas(snap, profile);
+        for (const schemaName of visibleNames) {
           appendSchemaSubtree(ulDb, profile, schemaName, false);
         }
         scheduleSilentStaleRefreshIfNeeded(databasePath, profile);
@@ -3044,12 +3395,11 @@ async function openConnection(id) {
   }
 
   pruneCacheForConnection(id);
-  /** @type {string[]} */
-  let schemaNames = [];
   try {
-    schemaNames = await fetchUserSchemas(profile);
+    const userSnap = await fetchUserSchemas(profile);
+    const visible = resolveVisibleUserSchemas(userSnap, profile);
     await Promise.all(
-      schemaNames.flatMap((schemaName) =>
+      visible.flatMap((schemaName) =>
         KIND_GROUPS.map(({ key }) =>
           fetchRelationObjects(profile, schemaName, key),
         ),
@@ -3276,10 +3626,14 @@ async function expandAllExplorerTree() {
         errorsByPath.set(`${id}::extensions`, msg);
         continue;
       }
-      const userNames = getCachedUserSchemas(id);
+      const userSnap = getCachedUserSchemasSnapshot(id);
       const sysNames = getCachedSystemSchemas(id);
-      if (userNames !== undefined) {
-        for (const schemaName of userNames) {
+      const visibleUser =
+        userSnap !== undefined
+          ? resolveVisibleUserSchemas(userSnap, profile)
+          : undefined;
+      if (visibleUser !== undefined) {
+        for (const schemaName of visibleUser) {
           const basePath = `${id}::schema::${schemaName}`;
           expandedTreePaths.add(basePath);
           for (const { key } of KIND_GROUPS) {
@@ -3297,8 +3651,8 @@ async function expandAllExplorerTree() {
         }
       }
       const fetches = [];
-      if (userNames !== undefined) {
-        for (const schemaName of userNames) {
+      if (visibleUser !== undefined) {
+        for (const schemaName of visibleUser) {
           for (const { key } of KIND_GROUPS) {
             fetches.push(
               fetchRelationObjects(

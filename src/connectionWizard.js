@@ -264,7 +264,11 @@ export function initConnectionWizard({
         if (editingConnectionId) {
           const idx = c.connections.findIndex((p) => p.id === editingConnectionId);
           if (idx >= 0) {
-            c.connections[idx] = profile;
+            const prev = c.connections[idx];
+            c.connections[idx] = {
+              ...profile,
+              userSchemaVisibility: prev.userSchemaVisibility,
+            };
           }
         } else {
           c.connections.push(profile);

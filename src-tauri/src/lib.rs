@@ -20,7 +20,9 @@ fn save_app_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), Strin
 }
 
 #[tauri::command]
-async fn pg_list_user_schemas(params: PgConnectionParams) -> Result<Vec<String>, String> {
+async fn pg_list_user_schemas(
+    params: PgConnectionParams,
+) -> Result<db_metadata::UserSchemasSnapshot, String> {
     db_metadata::list_user_schemas(params).await
 }
 

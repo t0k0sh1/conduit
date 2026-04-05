@@ -64,10 +64,34 @@ pub struct ConnectionProfile {
     /// When `false`, password is never stored in the profile (empty string); prompt at connect time (future).
     #[serde(default = "default_save_password_in_profile")]
     pub save_password_in_profile: bool,
+    #[serde(default, skip_serializing_if = "UserSchemaVisibility::is_default")]
+    pub user_schema_visibility: UserSchemaVisibility,
 }
 
 fn default_save_password_in_profile() -> bool {
     false
+}
+
+/// Which user schemas appear under the database node in the explorer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum UserSchemaVisibility {
+    /// Only the session default schema from the metadata snapshot (initial / unset).
+    #[default]
+    #[serde(rename = "default")]
+    Default,
+    /// Every user schema from the server snapshot.
+    #[serde(rename = "all")]
+    All,
+    /// Explicit subset; intersected with live `schema_names` in the UI.
+    #[serde(rename = "selected")]
+    Selected { schemas: Vec<String> },
+}
+
+impl UserSchemaVisibility {
+    fn is_default(&self) -> bool {
+        matches!(self, UserSchemaVisibility::Default)
+    }
 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {

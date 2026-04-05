@@ -628,8 +628,31 @@ async fn connect(params: &PgConnectionParams) -> Result<tokio_postgres::Client, 
     connect_raw(params).await.map_err(|e| e.to_string())
 }
 
-/// User-facing schemas (excludes `pg_*`, `information_schema`, etc.).
-pub async fn list_user_schemas(params: PgConnectionParams) -> Result<Vec<String>, String> {
+/// User-facing schema list plus the session default schema (`current_schema()`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserSchemasSnapshot {
+    pub schema_names: Vec<String>,
+    pub default_schema: String,
+}
+
+fn resolve_default_schema(schema_names: &[String], current_opt: Option<String>) -> String {
+    if !schema_names.is_empty() {
+        if let Some(ref s) = current_opt {
+            if schema_names.iter().any(|n| n == s) {
+                return s.clone();
+            }
+        }
+        if schema_names.iter().any(|n| n == "public") {
+            return "public".to_string();
+        }
+        return schema_names[0].clone();
+    }
+    current_opt.unwrap_or_else(|| "public".to_string())
+}
+
+/// User-facing schemas (excludes `pg_*`, `information_schema`, etc.) and `current_schema()`.
+pub async fn list_user_schemas(params: PgConnectionParams) -> Result<UserSchemasSnapshot, String> {
     let client = connect(&params).await?;
     let rows = client
         .query(
@@ -641,10 +664,22 @@ pub async fn list_user_schemas(params: PgConnectionParams) -> Result<Vec<String>
         )
         .await
         .map_err(|e| e.to_string())?;
-    Ok(rows
+    let schema_names: Vec<String> = rows
         .into_iter()
         .map(|r| r.get::<_, String>(0))
-        .collect())
+        .collect();
+
+    let current_row = client
+        .query_one("SELECT current_schema()", &[])
+        .await
+        .map_err(|e| e.to_string())?;
+    let current_opt: Option<String> = current_row.get(0);
+    let default_schema = resolve_default_schema(&schema_names, current_opt);
+
+    Ok(UserSchemasSnapshot {
+        schema_names,
+        default_schema,
+    })
 }
 
 /// `pg_catalog` and `information_schema` for the system subtree.

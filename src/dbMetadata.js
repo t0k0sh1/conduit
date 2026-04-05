@@ -134,13 +134,42 @@ export function pruneCacheForConnection(connectionId) {
 }
 
 /**
- * @param {string} connectionId
- * @returns {string[] | undefined}
+ * @typedef {{ schemaNames: string[]; defaultSchema: string }} UserSchemasSnapshot
  */
-export function getCachedUserSchemas(connectionId) {
-  return /** @type {string[] | undefined} */ (
-    getCachedPayloadAnyAge(cacheKey("pg", connectionId, "user-schemas"))
+
+/** Third segment of `isPgCacheStale("pg", connectionId, …)` for user schema snapshots. */
+export const PG_USER_SCHEMAS_CACHE_KEY = "user-schemas-v2";
+
+/**
+ * @param {string} connectionId
+ * @returns {UserSchemasSnapshot | undefined}
+ */
+export function getCachedUserSchemasSnapshot(connectionId) {
+  return /** @type {UserSchemasSnapshot | undefined} */ (
+    getCachedPayloadAnyAge(cacheKey("pg", connectionId, PG_USER_SCHEMAS_CACHE_KEY))
   );
+}
+
+/**
+ * @param {UserSchemasSnapshot} snapshot
+ * @param {import("./appConfig.js").ConnectionProfile} profile
+ * @returns {string[]}
+ */
+export function resolveVisibleUserSchemas(snapshot, profile) {
+  const names = snapshot.schemaNames;
+  const def = snapshot.defaultSchema;
+  const vis = profile.userSchemaVisibility;
+  if (!vis || vis.kind === "default") {
+    return names.filter((n) => n === def);
+  }
+  if (vis.kind === "all") {
+    return names.slice();
+  }
+  if (vis.kind === "selected") {
+    const set = new Set(vis.schemas);
+    return names.filter((n) => set.has(n));
+  }
+  return names.filter((n) => n === def);
 }
 
 /**
@@ -177,19 +206,21 @@ export function getCachedRelations(connectionId, schema, kind) {
 
 /**
  * @param {import("./appConfig.js").ConnectionProfile} profile
- * @returns {Promise<string[]>}
+ * @returns {Promise<UserSchemasSnapshot>}
  */
 export async function fetchUserSchemas(profile) {
   const invoke = getInvoke();
   if (!invoke) {
     throw new Error("Database metadata is only available in the desktop app.");
   }
-  const k = cacheKey("pg", profile.id, "user-schemas");
+  const k = cacheKey("pg", profile.id, PG_USER_SCHEMAS_CACHE_KEY);
   const hit = getFreshCached(k);
-  if (hit !== undefined) return /** @type {string[]} */ (hit);
-  const rows = await invoke("pg_list_user_schemas", { params: profileToParams(profile) });
-  setCached(k, rows);
-  return /** @type {string[]} */ (rows);
+  if (hit !== undefined) return /** @type {UserSchemasSnapshot} */ (hit);
+  const snap = await invoke("pg_list_user_schemas", {
+    params: profileToParams(profile),
+  });
+  setCached(k, snap);
+  return /** @type {UserSchemasSnapshot} */ (snap);
 }
 
 /**
