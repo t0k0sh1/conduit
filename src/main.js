@@ -574,7 +574,7 @@ async function ensureLoaded(path, profile) {
   const id = profile.id;
   const parts = path.split("::");
   if (parts[0] !== id) return;
-  if (parts.length === 2 && parts[1] === "schemas") {
+  if (parts.length === 2 && parts[1] === "database") {
     await fetchUserSchemas(profile);
     return;
   }
@@ -613,7 +613,7 @@ async function toggleTreePath(path, profile) {
 
   const id = profile.id;
   const needsFetch =
-    path === `${id}::schemas` ||
+    path === `${id}::database` ||
     path === `${id}::system` ||
     path === `${id}::extensions` ||
     (path.startsWith(`${id}::schema::`) && path.split("::").length === 4) ||
@@ -644,7 +644,7 @@ function isExpandedPathStale(path, profile) {
   const id = profile.id;
   const parts = path.split("::");
   if (parts[0] !== id) return false;
-  if (path === `${id}::schemas`)
+  if (path === `${id}::database`)
     return isPgCacheStale("pg", id, "user-schemas");
   if (path === `${id}::system`)
     return isPgCacheStale("pg", id, "system-schemas");
@@ -772,6 +772,82 @@ function createTreeRow(label, expanded, hasChildren, onToggle) {
   }
   row.appendChild(btn);
   row.appendChild(span);
+  return row;
+}
+
+/**
+ * Tree row with optional relation count (immediately after label, smaller text). Count omitted when `undefined`.
+ * @param {string} label
+ * @param {number | undefined} relationCount
+ * @param {boolean} expanded
+ * @param {boolean} hasChildren
+ * @param {() => void} onToggle
+ */
+function createTreeRowWithRelationCount(
+  label,
+  relationCount,
+  expanded,
+  hasChildren,
+  onToggle,
+) {
+  const row = document.createElement("div");
+  row.className =
+    "flex min-w-0 items-center gap-0.5 rounded px-1 py-0.5 text-stone-700";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className =
+    "flex h-5 w-5 shrink-0 items-center justify-center rounded text-stone-500 hover:bg-stone-200/80 hover:text-stone-800";
+  btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+  if (hasChildren) {
+    btn.setAttribute("aria-label", expanded ? "Collapse" : "Expand");
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onToggle();
+    });
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute(
+      "class",
+      `h-3.5 w-3.5 transition-transform ${expanded ? "rotate-90" : ""}`,
+    );
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "currentColor");
+    svg.setAttribute("aria-hidden", "true");
+    const tri = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    tri.setAttribute("d", "M8 5l8 7-8 7V5z");
+    svg.appendChild(tri);
+    btn.appendChild(svg);
+  } else {
+    btn.classList.add("invisible", "pointer-events-none");
+    btn.setAttribute("tabindex", "-1");
+    btn.setAttribute("aria-hidden", "true");
+  }
+  const labelWrap = document.createElement("div");
+  labelWrap.className =
+    "flex min-w-0 flex-1 items-center justify-start overflow-hidden";
+  const inner = document.createElement("div");
+  inner.className =
+    "inline-flex w-max max-w-full min-w-0 items-center gap-1.5";
+  const span = document.createElement("span");
+  span.className =
+    "min-w-0 cursor-pointer select-none truncate text-left";
+  span.textContent = label;
+  if (hasChildren) {
+    span.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onToggle();
+    });
+  }
+  inner.appendChild(span);
+  if (relationCount !== undefined) {
+    const countEl = document.createElement("span");
+    countEl.className =
+      "shrink-0 tabular-nums text-[0.65rem] leading-none text-stone-400";
+    countEl.textContent = String(relationCount);
+    inner.appendChild(countEl);
+  }
+  labelWrap.appendChild(inner);
+  row.appendChild(btn);
+  row.appendChild(labelWrap);
   return row;
 }
 
@@ -2431,145 +2507,148 @@ function renderDbTreeInto(parentUl, profile) {
   const id = profile.id;
   const prefix = `${id}::`;
 
-  const schemasPath = `${prefix}schemas`;
-  const schemasOpen = expandedTreePaths.has(schemasPath);
-  const liSchemas = document.createElement("li");
-  liSchemas.appendChild(
+  const databasePath = `${prefix}database`;
+  const databaseOpen = expandedTreePaths.has(databasePath);
+  const liDb = document.createElement("li");
+  liDb.appendChild(
     createTreeRow(
-      "Schemas",
-      schemasOpen,
+      profile.database,
+      databaseOpen,
       true,
-      () => void toggleTreePath(schemasPath, profile),
+      () => void toggleTreePath(databasePath, profile),
     ),
   );
-  if (schemasOpen) {
-    const ul = document.createElement("ul");
-    ul.className = "mt-0.5 border-l border-stone-200/80 pl-2";
-    ul.setAttribute("aria-label", "Schemas");
-    if (loadingPaths.has(schemasPath)) {
+  if (databaseOpen) {
+    const ulDb = document.createElement("ul");
+    ulDb.className = "mt-0.5 border-l border-stone-200/80 pl-2";
+    ulDb.setAttribute("aria-label", "Database");
+    if (loadingPaths.has(databasePath)) {
       const li = document.createElement("li");
       li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
       li.textContent = "Loading…";
-      ul.appendChild(li);
-    } else if (errorsByPath.has(schemasPath)) {
+      ulDb.appendChild(li);
+    } else if (errorsByPath.has(databasePath)) {
       const li = document.createElement("li");
       li.className = "rounded px-1 py-0.5 pl-6 text-xs text-red-600";
-      li.textContent = errorsByPath.get(schemasPath) ?? "";
-      ul.appendChild(li);
+      li.textContent = errorsByPath.get(databasePath) ?? "";
+      ulDb.appendChild(li);
     } else {
       const names = getCachedUserSchemas(id);
       if (names === undefined) {
-        ensureExpandedPathMissingData(schemasPath, profile);
+        ensureExpandedPathMissingData(databasePath, profile);
       } else if (names.length === 0) {
         const li = document.createElement("li");
         li.className = "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
-        li.textContent = "(no items)";
-        ul.appendChild(li);
-        scheduleSilentStaleRefreshIfNeeded(schemasPath, profile);
+        li.textContent = "(no schemas)";
+        ulDb.appendChild(li);
+        scheduleSilentStaleRefreshIfNeeded(databasePath, profile);
       } else {
         for (const schemaName of names) {
-          appendSchemaSubtree(ul, profile, schemaName, false);
+          appendSchemaSubtree(ulDb, profile, schemaName, false);
         }
-        scheduleSilentStaleRefreshIfNeeded(schemasPath, profile);
+        scheduleSilentStaleRefreshIfNeeded(databasePath, profile);
       }
     }
-    liSchemas.appendChild(ul);
-  }
-  parentUl.appendChild(liSchemas);
 
-  const systemPath = `${prefix}system`;
-  const systemOpen = expandedTreePaths.has(systemPath);
-  const liSys = document.createElement("li");
-  liSys.appendChild(
-    createTreeRow(
-      "System schemas",
-      systemOpen,
-      true,
-      () => void toggleTreePath(systemPath, profile),
-    ),
-  );
-  if (systemOpen) {
-    const ul = document.createElement("ul");
-    ul.className = "mt-0.5 border-l border-stone-200/80 pl-2";
-    ul.setAttribute("aria-label", "System schemas");
-    if (loadingPaths.has(systemPath)) {
-      const li = document.createElement("li");
-      li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
-      li.textContent = "Loading…";
-      ul.appendChild(li);
-    } else if (errorsByPath.has(systemPath)) {
-      const li = document.createElement("li");
-      li.className = "rounded px-1 py-0.5 pl-6 text-xs text-red-600";
-      li.textContent = errorsByPath.get(systemPath) ?? "";
-      ul.appendChild(li);
-    } else {
-      const names = getCachedSystemSchemas(id);
-      if (names === undefined) {
-        ensureExpandedPathMissingData(systemPath, profile);
-      } else if (names.length === 0) {
+    const systemPath = `${prefix}system`;
+    const systemOpen = expandedTreePaths.has(systemPath);
+    const liSys = document.createElement("li");
+    liSys.appendChild(
+      createTreeRow(
+        "System schemas",
+        systemOpen,
+        true,
+        () => void toggleTreePath(systemPath, profile),
+      ),
+    );
+    if (systemOpen) {
+      const ul = document.createElement("ul");
+      ul.className = "mt-0.5 border-l border-stone-200/80 pl-2";
+      ul.setAttribute("aria-label", "System schemas");
+      if (loadingPaths.has(systemPath)) {
         const li = document.createElement("li");
-        li.className = "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
-        li.textContent = "(no items)";
+        li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
+        li.textContent = "Loading…";
         ul.appendChild(li);
-        scheduleSilentStaleRefreshIfNeeded(systemPath, profile);
-      } else {
-        for (const schemaName of names) {
-          appendSchemaSubtree(ul, profile, schemaName, true);
-        }
-        scheduleSilentStaleRefreshIfNeeded(systemPath, profile);
-      }
-    }
-    liSys.appendChild(ul);
-  }
-  parentUl.appendChild(liSys);
-
-  const extPath = `${prefix}extensions`;
-  const extOpen = expandedTreePaths.has(extPath);
-  const liExt = document.createElement("li");
-  liExt.appendChild(
-    createTreeRow(
-      "Extensions",
-      extOpen,
-      true,
-      () => void toggleTreePath(extPath, profile),
-    ),
-  );
-  if (extOpen) {
-    const ul = document.createElement("ul");
-    ul.className = "mt-0.5 border-l border-stone-200/80 pl-2";
-    ul.setAttribute("aria-label", "Extensions");
-    if (loadingPaths.has(extPath)) {
-      const li = document.createElement("li");
-      li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
-      li.textContent = "Loading…";
-      ul.appendChild(li);
-    } else if (errorsByPath.has(extPath)) {
-      const li = document.createElement("li");
-      li.className = "rounded px-1 py-0.5 pl-6 text-xs text-red-600";
-      li.textContent = errorsByPath.get(extPath) ?? "";
-      ul.appendChild(li);
-    } else {
-      const names = getCachedExtensions(id);
-      if (names === undefined) {
-        ensureExpandedPathMissingData(extPath, profile);
-      } else if (names.length === 0) {
+      } else if (errorsByPath.has(systemPath)) {
         const li = document.createElement("li");
-        li.className = "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
-        li.textContent = "(no items)";
+        li.className = "rounded px-1 py-0.5 pl-6 text-xs text-red-600";
+        li.textContent = errorsByPath.get(systemPath) ?? "";
         ul.appendChild(li);
-        scheduleSilentStaleRefreshIfNeeded(extPath, profile);
       } else {
-        for (const name of names) {
+        const sysNames = getCachedSystemSchemas(id);
+        if (sysNames === undefined) {
+          ensureExpandedPathMissingData(systemPath, profile);
+        } else if (sysNames.length === 0) {
           const li = document.createElement("li");
-          li.appendChild(createLeafRow(name));
+          li.className =
+            "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
+          li.textContent = "(no items)";
           ul.appendChild(li);
+          scheduleSilentStaleRefreshIfNeeded(systemPath, profile);
+        } else {
+          for (const schemaName of sysNames) {
+            appendSchemaSubtree(ul, profile, schemaName, true);
+          }
+          scheduleSilentStaleRefreshIfNeeded(systemPath, profile);
         }
-        scheduleSilentStaleRefreshIfNeeded(extPath, profile);
       }
+      liSys.appendChild(ul);
     }
-    liExt.appendChild(ul);
+    ulDb.appendChild(liSys);
+
+    const extPath = `${prefix}extensions`;
+    const extOpen = expandedTreePaths.has(extPath);
+    const liExt = document.createElement("li");
+    liExt.appendChild(
+      createTreeRow(
+        "Extensions",
+        extOpen,
+        true,
+        () => void toggleTreePath(extPath, profile),
+      ),
+    );
+    if (extOpen) {
+      const ul = document.createElement("ul");
+      ul.className = "mt-0.5 border-l border-stone-200/80 pl-2";
+      ul.setAttribute("aria-label", "Extensions");
+      if (loadingPaths.has(extPath)) {
+        const li = document.createElement("li");
+        li.className = "rounded px-1 py-0.5 pl-6 text-xs text-stone-500";
+        li.textContent = "Loading…";
+        ul.appendChild(li);
+      } else if (errorsByPath.has(extPath)) {
+        const li = document.createElement("li");
+        li.className = "rounded px-1 py-0.5 pl-6 text-xs text-red-600";
+        li.textContent = errorsByPath.get(extPath) ?? "";
+        ul.appendChild(li);
+      } else {
+        const extNames = getCachedExtensions(id);
+        if (extNames === undefined) {
+          ensureExpandedPathMissingData(extPath, profile);
+        } else if (extNames.length === 0) {
+          const li = document.createElement("li");
+          li.className =
+            "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
+          li.textContent = "(no items)";
+          ul.appendChild(li);
+          scheduleSilentStaleRefreshIfNeeded(extPath, profile);
+        } else {
+          for (const name of extNames) {
+            const li = document.createElement("li");
+            li.appendChild(createLeafRow(name));
+            ul.appendChild(li);
+          }
+          scheduleSilentStaleRefreshIfNeeded(extPath, profile);
+        }
+      }
+      liExt.appendChild(ul);
+    }
+    ulDb.appendChild(liExt);
+
+    liDb.appendChild(ulDb);
   }
-  parentUl.appendChild(liExt);
+  parentUl.appendChild(liDb);
 }
 
 /**
@@ -2830,9 +2909,12 @@ function appendSchemaSubtree(ul, profile, schemaName, isSystem) {
       const p = `${basePath}::${key}`;
       const gOpen = expandedTreePaths.has(p);
       const liG = document.createElement("li");
+      const relList = getCachedRelations(id, schemaName, key);
+      const relCount = relList === undefined ? undefined : relList.length;
       liG.appendChild(
-        createTreeRow(
+        createTreeRowWithRelationCount(
           label,
+          relCount,
           gOpen,
           true,
           () => void toggleTreePath(p, profile),
@@ -2979,7 +3061,7 @@ async function openConnection(id) {
     return;
   }
 
-  expandedTreePaths.add(`${id}::schemas`);
+  expandedTreePaths.add(`${id}::database`);
 
   openConnectionIds.add(id);
   setStatusMessage("Ready");
@@ -3178,7 +3260,7 @@ async function expandAllExplorerTree() {
   try {
     for (const profile of targets) {
       const id = profile.id;
-      expandedTreePaths.add(`${id}::schemas`);
+      expandedTreePaths.add(`${id}::database`);
       expandedTreePaths.add(`${id}::system`);
       expandedTreePaths.add(`${id}::extensions`);
       try {
@@ -3189,7 +3271,7 @@ async function expandAllExplorerTree() {
         ]);
       } catch (e) {
         const msg = formatConnectionFailureMessage(e);
-        errorsByPath.set(`${id}::schemas`, msg);
+        errorsByPath.set(`${id}::database`, msg);
         errorsByPath.set(`${id}::system`, msg);
         errorsByPath.set(`${id}::extensions`, msg);
         continue;
