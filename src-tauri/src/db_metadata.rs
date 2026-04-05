@@ -42,7 +42,7 @@ fn quote_ident(s: &str) -> String {
 const TABLE_PREVIEW_DEFAULT_LIMIT: u32 = 100;
 const TABLE_PREVIEW_MAX_LIMIT: u32 = 1000;
 
-/// Read-only row preview for a base table (`SELECT * ... LIMIT`).
+/// Read-only row preview for a table, view, or materialized view (`SELECT * ... LIMIT`).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TablePreview {
@@ -232,11 +232,17 @@ pub async fn fetch_table_preview(
 
     let client = connect(&params).await?;
 
+    // `information_schema.columns` omits materialized views in PostgreSQL, so column
+    // metadata would be empty and the UI would show a row count with no cells.
     let col_rows = client
         .query(
-            "SELECT column_name FROM information_schema.columns \
-             WHERE table_schema = $1 AND table_name = $2 \
-             ORDER BY ordinal_position",
+            "SELECT a.attname::text AS column_name \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = $1 AND c.relname = $2 \
+               AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum",
             &[&schema, &table],
         )
         .await

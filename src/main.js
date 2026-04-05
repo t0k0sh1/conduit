@@ -1,25 +1,25 @@
 import { getAppConfig, updateAppConfig } from "./appConfig.js";
 import { initConnectionWizard } from "./connectionWizard.js";
-import { installPlainTextInputDefaults } from "./inputBehavior.js";
 import {
-  pruneCacheForConnection,
-  fetchUserSchemas,
-  fetchSystemSchemaNames,
+  clearSessionPassword,
+  executePgSql,
   fetchExtensions,
   fetchRelationObjects,
+  fetchSystemSchemaNames,
   fetchTablePreview,
-  executePgSql,
-  parsePgExecutionError,
+  fetchUserSchemas,
   formatPgExecutionErrorMessage,
-  getCachedUserSchemas,
-  getCachedSystemSchemas,
   getCachedExtensions,
   getCachedRelations,
+  getCachedSystemSchemas,
+  getCachedUserSchemas,
   isPgCacheStale,
+  parsePgExecutionError,
+  pruneCacheForConnection,
   setSessionPassword,
-  clearSessionPassword,
   shouldPromptForSessionPassword,
 } from "./dbMetadata.js";
+import { installPlainTextInputDefaults } from "./inputBehavior.js";
 import { formatSql } from "./sqlFormat.js";
 
 const SIDEBAR_DEFAULT_WIDTH_PX = 256;
@@ -27,7 +27,12 @@ const SIDEBAR_MIN_WIDTH_PX = 160;
 const SIDEBAR_MAX_WIDTH_PX = 560;
 
 const SIDEBAR_OPEN = ["opacity-100", "border-r"];
-const SIDEBAR_CLOSED = ["w-0", "opacity-0", "border-r-0", "pointer-events-none"];
+const SIDEBAR_CLOSED = [
+  "w-0",
+  "opacity-0",
+  "border-r-0",
+  "pointer-events-none",
+];
 
 /**
  * `contextmenu` / `click` targets can be a `Text` node inside a button or label.
@@ -166,6 +171,33 @@ const KIND_GROUPS = [
   { key: "sequences", label: "Sequences" },
 ];
 
+/** Kinds that support the same row preview as base tables (`SELECT *`). */
+const PREVIEWABLE_REL_KINDS = new Set(["tables", "views", "materialized_views"]);
+
+/**
+ * @param {"tables"|"views"|"materialized_views"} kind
+ * @returns {{ openHint: string; ariaPreview: string }}
+ */
+function previewableRelationKindUi(kind) {
+  switch (kind) {
+    case "views":
+      return {
+        openHint: "Double-click to open view preview",
+        ariaPreview: "Preview view",
+      };
+    case "materialized_views":
+      return {
+        openHint: "Double-click to open materialized view preview",
+        ariaPreview: "Preview materialized view",
+      };
+    default:
+      return {
+        openHint: "Double-click to open table preview",
+        ariaPreview: "Preview table",
+      };
+  }
+}
+
 /**
  * @param {string} id
  */
@@ -270,9 +302,12 @@ function isExpandedPathStale(path, profile) {
   const id = profile.id;
   const parts = path.split("::");
   if (parts[0] !== id) return false;
-  if (path === `${id}::schemas`) return isPgCacheStale("pg", id, "user-schemas");
-  if (path === `${id}::system`) return isPgCacheStale("pg", id, "system-schemas");
-  if (path === `${id}::extensions`) return isPgCacheStale("pg", id, "extensions");
+  if (path === `${id}::schemas`)
+    return isPgCacheStale("pg", id, "user-schemas");
+  if (path === `${id}::system`)
+    return isPgCacheStale("pg", id, "system-schemas");
+  if (path === `${id}::extensions`)
+    return isPgCacheStale("pg", id, "extensions");
   if (parts.length === 4 && parts[1] === "schema") {
     return isPgCacheStale("pg", id, "rel", parts[2], parts[3]);
   }
@@ -338,7 +373,8 @@ function ensureExpandedPathMissingData(path, profile) {
  */
 function createTreeRow(label, expanded, hasChildren, onToggle) {
   const row = document.createElement("div");
-  row.className = "flex min-w-0 items-center gap-0.5 rounded px-1 py-0.5 text-stone-700";
+  row.className =
+    "flex min-w-0 items-center gap-0.5 rounded px-1 py-0.5 text-stone-700";
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className =
@@ -797,7 +833,10 @@ function renderTabStrip() {
       if (!pointerTabDrag || pointerTabDrag.tabId !== tab.id) return;
       const dx = e.clientX - pointerTabDrag.startX;
       const dy = e.clientY - pointerTabDrag.startY;
-      if (!pointerTabDrag.dragging && dx * dx + dy * dy > TAB_DRAG_THRESHOLD_PX * TAB_DRAG_THRESHOLD_PX) {
+      if (
+        !pointerTabDrag.dragging &&
+        dx * dx + dy * dy > TAB_DRAG_THRESHOLD_PX * TAB_DRAG_THRESHOLD_PX
+      ) {
         pointerTabDrag.dragging = true;
         const rect = wrap.getBoundingClientRect();
         pointerTabDrag.grabOffsetX = e.clientX - rect.left;
@@ -850,7 +889,9 @@ function renderTabStrip() {
               );
             }
             if (nextHover) {
-              const mark = strip.querySelector(`[data-tab-id="${CSS.escape(nextHover)}"]`);
+              const mark = strip.querySelector(
+                `[data-tab-id="${CSS.escape(nextHover)}"]`,
+              );
               if (mark) {
                 mark.classList.add(
                   "ring-2",
@@ -874,7 +915,8 @@ function renderTabStrip() {
       let dropTargetId = null;
       if (wasDrag) {
         dropTargetId =
-          pickTablePreviewTabDropTarget(e.clientX, e.clientY, ghost, tab.id) ?? hoverFallback;
+          pickTablePreviewTabDropTarget(e.clientX, e.clientY, ghost, tab.id) ??
+          hoverFallback;
       }
       cleanupTablePreviewTabDragVisuals();
       pointerTabDrag = null;
@@ -933,7 +975,8 @@ function renderSqlEditorTabStrip() {
     tabBtn.setAttribute("role", "tab");
     tabBtn.id = `sql-editor-tab-${tab.id}`;
     tabBtn.tabIndex = isActive ? 0 : -1;
-    tabBtn.className = "min-w-0 flex-1 cursor-pointer truncate text-left outline-none hover:text-stone-900";
+    tabBtn.className =
+      "min-w-0 flex-1 cursor-pointer truncate text-left outline-none hover:text-stone-900";
     tabBtn.setAttribute("aria-controls", `sql-editor-panel-${tab.id}`);
     tabBtn.setAttribute("aria-selected", isActive ? "true" : "false");
     tabBtn.textContent = tab.tabLabel;
@@ -1092,7 +1135,10 @@ function removeSqlQueryTabsForConnection(connectionId) {
     return;
   }
 
-  if (!activeSqlQueryTabId || !sqlQueryTabs.some((t) => t.id === activeSqlQueryTabId)) {
+  if (
+    !activeSqlQueryTabId ||
+    !sqlQueryTabs.some((t) => t.id === activeSqlQueryTabId)
+  ) {
     const last = sqlQueryTabs[sqlQueryTabs.length - 1];
     activeSqlQueryTabId = last.id;
   }
@@ -1107,10 +1153,7 @@ function removeSqlQueryTabsForConnection(connectionId) {
  * @returns {import("./appConfig.js").ConnectionProfile | null}
  */
 function getProfileForNewQueryFromToolbar() {
-  if (
-    selectedConnectionId &&
-    openConnectionIds.has(selectedConnectionId)
-  ) {
+  if (selectedConnectionId && openConnectionIds.has(selectedConnectionId)) {
     const p = lastConnections.find((c) => c.id === selectedConnectionId);
     if (p) return p;
   }
@@ -1189,12 +1232,16 @@ function closeTablePreviewTab(tabId) {
  * @param {string} connectionId
  */
 function removeTabsForConnection(connectionId) {
-  const toRemove = tablePreviewTabs.filter((t) => t.connectionId === connectionId);
+  const toRemove = tablePreviewTabs.filter(
+    (t) => t.connectionId === connectionId,
+  );
   if (toRemove.length > 0) {
     for (const t of toRemove) {
       t.panelEl.remove();
     }
-    tablePreviewTabs = tablePreviewTabs.filter((t) => t.connectionId !== connectionId);
+    tablePreviewTabs = tablePreviewTabs.filter(
+      (t) => t.connectionId !== connectionId,
+    );
   }
 
   removeSqlQueryTabsForConnection(connectionId);
@@ -1209,7 +1256,10 @@ function removeTabsForConnection(connectionId) {
     return;
   }
 
-  if (!activeTablePreviewTabId || !tablePreviewTabs.some((t) => t.id === activeTablePreviewTabId)) {
+  if (
+    !activeTablePreviewTabId ||
+    !tablePreviewTabs.some((t) => t.id === activeTablePreviewTabId)
+  ) {
     const last = tablePreviewTabs[tablePreviewTabs.length - 1];
     activeTablePreviewTabId = last.id;
     selectedTablePreviewKey = last.previewKey;
@@ -1236,7 +1286,10 @@ function finalizeActiveAfterBulkClose(keepId) {
     renderConnections(lastConnections);
     return;
   }
-  if (!activeTablePreviewTabId || !tablePreviewTabs.some((t) => t.id === activeTablePreviewTabId)) {
+  if (
+    !activeTablePreviewTabId ||
+    !tablePreviewTabs.some((t) => t.id === activeTablePreviewTabId)
+  ) {
     activeTablePreviewTabId = keepId;
     const t = tablePreviewTabs.find((x) => x.id === keepId);
     selectedTablePreviewKey = t?.previewKey ?? null;
@@ -1345,12 +1398,19 @@ function renderTablePreviewPlaceholder() {
  * @param {string} schemaName
  * @param {string} tableName
  */
-function renderTablePreviewLoading(headingEl, metaEl, bodyEl, schemaName, tableName) {
+function renderTablePreviewLoading(
+  headingEl,
+  metaEl,
+  bodyEl,
+  schemaName,
+  tableName,
+) {
   const label = `${schemaName}.${tableName}`;
   if (headingEl) headingEl.textContent = label;
   if (metaEl) metaEl.textContent = "Loading…";
   if (bodyEl) {
-    bodyEl.className = "min-h-0 flex-1 overflow-auto p-3 text-sm text-stone-500 select-text";
+    bodyEl.className =
+      "min-h-0 flex-1 overflow-auto p-3 text-sm text-stone-500 select-text";
     bodyEl.replaceChildren();
     bodyEl.appendChild(document.createTextNode("Loading…"));
   }
@@ -1430,7 +1490,8 @@ function renderSqlRowsTable(container, columns, rows) {
     tr.className = "border-b border-stone-100/90";
     for (let c = 0; c < columns.length; c++) {
       const td = document.createElement("td");
-      td.className = "max-w-[24rem] whitespace-pre-wrap break-words px-2 py-1.5 align-top";
+      td.className =
+        "max-w-[24rem] whitespace-pre-wrap break-words px-2 py-1.5 align-top";
       const cell = formatSqlResultCell(row[c]);
       if (cell.type === "null") {
         const span = document.createElement("span");
@@ -1691,7 +1752,8 @@ function renderTablePreviewTable(bodyEl, metaEl, data) {
         : {};
     for (const col of data.columns) {
       const td = document.createElement("td");
-      td.className = "max-w-[24rem] whitespace-pre-wrap break-words px-2 py-1.5 align-top";
+      td.className =
+        "max-w-[24rem] whitespace-pre-wrap break-words px-2 py-1.5 align-top";
       const cell = formatTableCellPreview(rowObj[col]);
       if (cell.type === "null") {
         const span = document.createElement("span");
@@ -1718,7 +1780,13 @@ function renderTablePreviewTable(bodyEl, metaEl, data) {
 async function loadTablePreview(tabId, profile, schemaName, tableName) {
   const tab = tablePreviewTabs.find((t) => t.id === tabId);
   if (!tab) return;
-  renderTablePreviewLoading(tab.headingEl, tab.metaEl, tab.bodyEl, schemaName, tableName);
+  renderTablePreviewLoading(
+    tab.headingEl,
+    tab.metaEl,
+    tab.bodyEl,
+    schemaName,
+    tableName,
+  );
   setStatusMessage("Loading…");
   try {
     const data = await fetchTablePreview(profile, schemaName, tableName, {
@@ -1744,10 +1812,16 @@ function resetTablePreviewPanel() {
 /**
  * @param {import("./appConfig.js").ConnectionProfile} profile
  * @param {string} schemaName
- * @param {string} tableName
+ * @param {string} objectName
+ * @param {"tables"|"views"|"materialized_views"} relationKind
  */
-function createTableLeafRow(profile, schemaName, tableName) {
-  const key = tablePreviewKey(profile.id, schemaName, tableName);
+function createPreviewableRelationLeafRow(
+  profile,
+  schemaName,
+  objectName,
+  relationKind,
+) {
+  const key = tablePreviewKey(profile.id, schemaName, objectName);
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className =
@@ -1755,25 +1829,30 @@ function createTableLeafRow(profile, schemaName, tableName) {
   if (selectedTablePreviewKey === key) {
     btn.classList.add("bg-stone-200/80", "ring-1", "ring-stone-300/40");
   }
-  btn.textContent = tableName;
-  btn.setAttribute("data-table-leaf", "true");
+  btn.textContent = objectName;
+  btn.setAttribute("data-preview-rel-leaf", "true");
   btn.dataset.connectionId = profile.id;
   btn.dataset.schemaName = schemaName;
-  btn.dataset.tableName = tableName;
-  btn.title = "Double-click to open table preview";
-  btn.setAttribute("aria-label", `Preview table ${schemaName}.${tableName}`);
-  const openTable = () => {
-    openNewTableTab(profile, schemaName, tableName);
+  btn.dataset.tableName = objectName;
+  btn.dataset.relationKind = relationKind;
+  const ui = previewableRelationKindUi(relationKind);
+  btn.title = ui.openHint;
+  btn.setAttribute(
+    "aria-label",
+    `${ui.ariaPreview} ${schemaName}.${objectName}`,
+  );
+  const openPreview = () => {
+    openNewTableTab(profile, schemaName, objectName);
   };
   btn.addEventListener("dblclick", (e) => {
     e.stopPropagation();
-    openTable();
+    openPreview();
   });
   btn.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       e.stopPropagation();
-      openTable();
+      openPreview();
     }
   });
   return btn;
@@ -1791,7 +1870,12 @@ function renderDbTreeInto(parentUl, profile) {
   const schemasOpen = expandedTreePaths.has(schemasPath);
   const liSchemas = document.createElement("li");
   liSchemas.appendChild(
-    createTreeRow("Schemas", schemasOpen, true, () => void toggleTreePath(schemasPath, profile)),
+    createTreeRow(
+      "Schemas",
+      schemasOpen,
+      true,
+      () => void toggleTreePath(schemasPath, profile),
+    ),
   );
   if (schemasOpen) {
     const ul = document.createElement("ul");
@@ -1832,7 +1916,12 @@ function renderDbTreeInto(parentUl, profile) {
   const systemOpen = expandedTreePaths.has(systemPath);
   const liSys = document.createElement("li");
   liSys.appendChild(
-    createTreeRow("System schemas", systemOpen, true, () => void toggleTreePath(systemPath, profile)),
+    createTreeRow(
+      "System schemas",
+      systemOpen,
+      true,
+      () => void toggleTreePath(systemPath, profile),
+    ),
   );
   if (systemOpen) {
     const ul = document.createElement("ul");
@@ -1873,7 +1962,12 @@ function renderDbTreeInto(parentUl, profile) {
   const extOpen = expandedTreePaths.has(extPath);
   const liExt = document.createElement("li");
   liExt.appendChild(
-    createTreeRow("Extensions", extOpen, true, () => void toggleTreePath(extPath, profile)),
+    createTreeRow(
+      "Extensions",
+      extOpen,
+      true,
+      () => void toggleTreePath(extPath, profile),
+    ),
   );
   if (extOpen) {
     const ul = document.createElement("ul");
@@ -1927,7 +2021,12 @@ function appendSchemaSubtree(ul, profile, schemaName, isSystem) {
   const open = expandedTreePaths.has(basePath);
   const li = document.createElement("li");
   li.appendChild(
-    createTreeRow(schemaName, open, true, () => void toggleTreePath(basePath, profile)),
+    createTreeRow(
+      schemaName,
+      open,
+      true,
+      () => void toggleTreePath(basePath, profile),
+    ),
   );
   if (open) {
     const ulG = document.createElement("ul");
@@ -1937,7 +2036,12 @@ function appendSchemaSubtree(ul, profile, schemaName, isSystem) {
       const gOpen = expandedTreePaths.has(p);
       const liG = document.createElement("li");
       liG.appendChild(
-        createTreeRow(label, gOpen, true, () => void toggleTreePath(p, profile)),
+        createTreeRow(
+          label,
+          gOpen,
+          true,
+          () => void toggleTreePath(p, profile),
+        ),
       );
       if (gOpen) {
         const ulN = document.createElement("ul");
@@ -1958,15 +2062,23 @@ function appendSchemaSubtree(ul, profile, schemaName, isSystem) {
             ensureExpandedPathMissingData(p, profile);
           } else if (objs.length === 0) {
             const liL = document.createElement("li");
-            liL.className = "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
+            liL.className =
+              "rounded px-1 py-0.5 pl-6 text-xs italic text-stone-400";
             liL.textContent = "(no items)";
             ulN.appendChild(liL);
             scheduleSilentStaleRefreshIfNeeded(p, profile);
           } else {
             for (const n of objs) {
               const liN = document.createElement("li");
-              if (key === "tables") {
-                liN.appendChild(createTableLeafRow(profile, schemaName, n));
+              if (PREVIEWABLE_REL_KINDS.has(key)) {
+                liN.appendChild(
+                  createPreviewableRelationLeafRow(
+                    profile,
+                    schemaName,
+                    n,
+                    /** @type {"tables"|"views"|"materialized_views"} */ (key),
+                  ),
+                );
               } else {
                 liN.appendChild(createLeafRow(n));
               }
@@ -2076,8 +2188,10 @@ async function openConnection(id) {
   try {
     schemaNames = await fetchUserSchemas(profile);
     await Promise.all(
-      schemaNames.map((schemaName) =>
-        fetchRelationObjects(profile, schemaName, "tables"),
+      schemaNames.flatMap((schemaName) =>
+        KIND_GROUPS.map(({ key }) =>
+          fetchRelationObjects(profile, schemaName, key),
+        ),
       ),
     );
   } catch (e) {
@@ -2217,7 +2331,10 @@ function renderConnections(connections) {
     }
   }
 
-  if (selectedConnectionId && !connections.some((c) => c.id === selectedConnectionId)) {
+  if (
+    selectedConnectionId &&
+    !connections.some((c) => c.id === selectedConnectionId)
+  ) {
     selectedConnectionId = null;
   }
 
@@ -2235,7 +2352,10 @@ function renderConnections(connections) {
       row.classList.add("bg-stone-200/80", "ring-1", "ring-stone-300/40");
     }
     row.title = `${c.host}:${c.port}/${c.database}`;
-    row.setAttribute("aria-selected", selectedConnectionId === c.id ? "true" : "false");
+    row.setAttribute(
+      "aria-selected",
+      selectedConnectionId === c.id ? "true" : "false",
+    );
 
     const dbOpen = openConnectionIds.has(c.id);
     const treeVisible = dbOpen && !objectTreeCollapsedByConnectionId.has(c.id);
@@ -2376,7 +2496,8 @@ async function removeConnectionAfterConfirm(id) {
   } catch (err) {
     const status = document.getElementById("status-message");
     if (status) {
-      status.textContent = err instanceof Error ? err.message : "Failed to remove connection.";
+      status.textContent =
+        err instanceof Error ? err.message : "Failed to remove connection.";
     }
   }
 }
@@ -2414,12 +2535,13 @@ function initTableLeafContextMenu() {
   }
 
   list.addEventListener("contextmenu", (e) => {
-    const leaf = eventTargetElement(e)?.closest("[data-table-leaf]");
+    const leaf = eventTargetElement(e)?.closest("[data-preview-rel-leaf]");
     if (!leaf || !(leaf instanceof HTMLButtonElement)) return;
     const connectionId = leaf.dataset.connectionId;
     const schemaName = leaf.dataset.schemaName;
     const tableName = leaf.dataset.tableName;
-    if (!connectionId || schemaName === undefined || tableName === undefined) return;
+    if (!connectionId || schemaName === undefined || tableName === undefined)
+      return;
     showMenu(e, connectionId, schemaName, tableName);
   });
 
@@ -2474,7 +2596,8 @@ function initTablePreviewTabContextMenu() {
   const btnLeft = document.getElementById("context-tab-close-left");
   const btnAll = document.getElementById("context-tab-close-all");
   const btnClose = document.getElementById("context-tab-close");
-  if (!menu || !tabsStrip || !btnRight || !btnLeft || !btnAll || !btnClose) return;
+  if (!menu || !tabsStrip || !btnRight || !btnLeft || !btnAll || !btnClose)
+    return;
 
   /** @type {string | null} */
   let tablePreviewTabContextMenuTargetId = null;
@@ -2564,7 +2687,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   const config = await getAppConfig();
 
   sidebarWidthPx = clampSidebarWidth(
-    typeof config.ui.sidebarWidthPx === "number" ? config.ui.sidebarWidthPx : SIDEBAR_DEFAULT_WIDTH_PX,
+    typeof config.ui.sidebarWidthPx === "number"
+      ? config.ui.sidebarWidthPx
+      : SIDEBAR_DEFAULT_WIDTH_PX,
   );
   setSidebarOpen(config.ui.sidebarOpen);
   initSidebarResize();

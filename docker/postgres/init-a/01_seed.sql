@@ -118,3 +118,37 @@ VALUES ('page_view'), ('click');
 
 INSERT INTO analytics.daily_rollups (day, event_count)
 VALUES ('2026-04-01', 42), ('2026-04-02', 17);
+
+-- Views, materialized views, sequences, and functions (object tree demos).
+CREATE OR REPLACE VIEW v_team_roster AS
+SELECT
+  t.name AS team_name,
+  m.name AS member_name
+FROM teams t
+JOIN members m ON m.team_id = t.id;
+
+CREATE OR REPLACE VIEW v_project_counts_by_status AS
+SELECT status, COUNT(*)::int AS project_count
+FROM projects
+GROUP BY status;
+
+CREATE MATERIALIZED VIEW analytics.mv_events_by_day AS
+SELECT
+  (occurred_at AT TIME ZONE 'UTC')::date AS day,
+  COUNT(*)::bigint AS event_count
+FROM analytics.events
+GROUP BY 1;
+
+CREATE UNIQUE INDEX mv_events_by_day_day_key ON analytics.mv_events_by_day (day);
+
+CREATE SEQUENCE order_ref_seq;
+
+CREATE SEQUENCE app_data.attachment_seq;
+
+CREATE OR REPLACE FUNCTION public.member_count_for_team(p_team_id bigint)
+RETURNS bigint
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT COUNT(*)::bigint FROM members WHERE team_id = p_team_id;
+$$;
