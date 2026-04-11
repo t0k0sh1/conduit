@@ -146,6 +146,14 @@ let activeSqlQueryTabId = null;
 
 let nextSqlQueryTabSeq = 1;
 
+/** Ordered tab ids (`sqlq-*` and `tab-*`) in the unified workspace strip. */
+/** @type {string[]} */
+let workspaceTabOrder = [];
+
+/** Which tab panel is visible (`sqlq-*` or `tab-*`). */
+/** @type {string | null} */
+let activeWorkspaceTabId = null;
+
 const TABLE_PREVIEW_DEFAULT_LIMIT = 100;
 
 /**
@@ -1405,22 +1413,54 @@ function createSqlQueryPanelElements(tabId) {
   };
 }
 
-function syncTabPanelVisibility() {
-  for (const t of tablePreviewTabs) {
-    t.panelEl.classList.toggle("hidden", t.id !== activeTablePreviewTabId);
-  }
-}
-
-function syncSqlQueryPanelVisibility() {
+function syncWorkspacePanelVisibility() {
   for (const t of sqlQueryTabs) {
-    t.panelEl.classList.toggle("hidden", t.id !== activeSqlQueryTabId);
+    t.panelEl.classList.toggle("hidden", t.id !== activeWorkspaceTabId);
+  }
+  for (const t of tablePreviewTabs) {
+    t.panelEl.classList.toggle("hidden", t.id !== activeWorkspaceTabId);
   }
 }
 
-function updateSqlEditorAreaVisibility() {
-  const area = document.getElementById("sql-editor-area");
+function syncWorkspacePanelsDomOrder() {
+  const root = document.getElementById("workspace-panels");
+  if (!root) return;
+  for (const id of workspaceTabOrder) {
+    const sql = sqlQueryTabs.find((t) => t.id === id);
+    const table = sql ? null : tablePreviewTabs.find((t) => t.id === id);
+    const panel = sql?.panelEl ?? table?.panelEl;
+    if (panel) root.appendChild(panel);
+  }
+}
+
+/**
+ * @param {string} id
+ */
+function removeIdFromWorkspaceOrder(id) {
+  const i = workspaceTabOrder.indexOf(id);
+  if (i !== -1) workspaceTabOrder.splice(i, 1);
+}
+
+/**
+ * @param {string} fromId
+ * @param {string} toId
+ */
+function swapWorkspaceTabsById(fromId, toId) {
+  if (fromId === toId) return;
+  const i = workspaceTabOrder.indexOf(fromId);
+  const j = workspaceTabOrder.indexOf(toId);
+  if (i === -1 || j === -1) return;
+  const tmp = workspaceTabOrder[i];
+  workspaceTabOrder[i] = workspaceTabOrder[j];
+  workspaceTabOrder[j] = tmp;
+  syncWorkspacePanelsDomOrder();
+  renderWorkspaceTabStrip();
+}
+
+function updateWorkspaceAreaVisibility() {
+  const area = document.getElementById("workspace-area");
   if (!area) return;
-  area.classList.toggle("hidden", sqlQueryTabs.length === 0);
+  area.classList.toggle("hidden", workspaceTabOrder.length === 0);
   renderSqlConnectionRow();
 }
 
@@ -1461,9 +1501,13 @@ function renderSqlConnectionRow() {
     select.appendChild(opt);
   }
 
-  const activeTab =
-    activeSqlQueryTabId &&
-    sqlQueryTabs.find((t) => t.id === activeSqlQueryTabId);
+  const sqlActive =
+    activeWorkspaceTabId &&
+    sqlQueryTabs.find((t) => t.id === activeWorkspaceTabId);
+  const tableActive =
+    activeWorkspaceTabId &&
+    tablePreviewTabs.find((t) => t.id === activeWorkspaceTabId);
+  const activeTab = sqlActive ?? tableActive;
   if (activeTab) {
     if (open.some((c) => c.id === activeTab.connectionId)) {
       select.value = activeTab.connectionId;
@@ -1487,13 +1531,13 @@ function initSqlEditorConnectionRow() {
   select.addEventListener("change", () => {
     const id = select.value;
     if (!id) return;
-    const tab =
-      activeSqlQueryTabId &&
-      sqlQueryTabs.find((t) => t.id === activeSqlQueryTabId);
-    if (tab) {
-      if (id === tab.connectionId) return;
-      tab.connectionId = id;
-      renderSqlEditorTabStrip();
+    const sqlTab =
+      activeWorkspaceTabId &&
+      sqlQueryTabs.find((t) => t.id === activeWorkspaceTabId);
+    if (sqlTab) {
+      if (id === sqlTab.connectionId) return;
+      sqlTab.connectionId = id;
+      renderWorkspaceTabStrip();
       return;
     }
     if (selectedConnectionId !== id) {
@@ -1532,7 +1576,7 @@ function cleanupTablePreviewTabDragVisuals() {
   if (pointerTabDrag?.sourceWrap) {
     pointerTabDrag.sourceWrap.classList.remove("opacity-25", "opacity-60");
   }
-  const tabsStrip = document.getElementById("table-preview-tabs");
+  const tabsStrip = document.getElementById("workspace-tabs");
   if (tabsStrip) {
     for (const el of tabsStrip.querySelectorAll("[data-tab-id]")) {
       el.classList.remove(
@@ -1559,7 +1603,7 @@ function cleanupTablePreviewTabDragVisuals() {
  * @param {string} sourceTabId
  * @returns {string | null}
  */
-function pickTablePreviewTabDropTarget(clientX, clientY, ghostEl, sourceTabId) {
+function pickWorkspaceTabDropTarget(clientX, clientY, ghostEl, sourceTabId) {
   const stack = document.elementsFromPoint(clientX, clientY);
   if (!stack?.length) return null;
   for (const node of stack) {
@@ -1573,74 +1617,76 @@ function pickTablePreviewTabDropTarget(clientX, clientY, ghostEl, sourceTabId) {
   return null;
 }
 
-function syncTablePreviewPanelsOrder() {
-  const panelsRoot = document.getElementById("table-preview-panels");
-  if (!panelsRoot) return;
-  for (const t of tablePreviewTabs) {
-    panelsRoot.appendChild(t.panelEl);
-  }
-}
-
-/**
- * @param {string} fromId
- * @param {string} toId
- */
-function swapTablePreviewTabsById(fromId, toId) {
-  if (fromId === toId) return;
-  const i = tablePreviewTabs.findIndex((t) => t.id === fromId);
-  const j = tablePreviewTabs.findIndex((t) => t.id === toId);
-  if (i === -1 || j === -1) return;
-  const tmp = tablePreviewTabs[i];
-  tablePreviewTabs[i] = tablePreviewTabs[j];
-  tablePreviewTabs[j] = tmp;
-  syncTablePreviewPanelsOrder();
-  syncTabPanelVisibility();
-  renderTabStrip();
-}
-
-function renderTabStrip() {
-  const tabsStrip = document.getElementById("table-preview-tabs");
+function renderWorkspaceTabStrip() {
+  const tabsStrip = document.getElementById("workspace-tabs");
   if (!tabsStrip) return;
   tabsStrip.replaceChildren();
 
   const TAB_DRAG_THRESHOLD_PX = 5;
 
-  for (const tab of tablePreviewTabs) {
-    const isActive = tab.id === activeTablePreviewTabId;
+  for (const tabId of workspaceTabOrder) {
+    const sqlTab = sqlQueryTabs.find((t) => t.id === tabId);
+    const tableTab = sqlTab
+      ? null
+      : tablePreviewTabs.find((t) => t.id === tabId);
+    if (!sqlTab && !tableTab) continue;
+
+    const isActive = tabId === activeWorkspaceTabId;
     const wrap = document.createElement("div");
-    wrap.dataset.tabId = tab.id;
+    wrap.dataset.tabId = tabId;
+    const grabClasses = "touch-none cursor-grab active:cursor-grabbing";
     wrap.className = isActive
-      ? "flex min-w-0 max-w-[14rem] shrink-0 touch-none cursor-grab select-none items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#faf8f4] px-1 pl-1.5 py-1 text-xs text-stone-800 ring-1 ring-stone-300/40 active:cursor-grabbing"
-      : "flex min-w-0 max-w-[14rem] shrink-0 touch-none cursor-grab select-none items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#f0ebe3]/90 px-1 pl-1.5 py-1 text-xs text-stone-700 active:cursor-grabbing";
+      ? `flex min-w-0 max-w-[14rem] shrink-0 select-none items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#faf8f4] px-1 pl-1.5 py-1 text-xs text-stone-800 ring-1 ring-stone-300/40 ${grabClasses}`
+      : `flex min-w-0 max-w-[14rem] shrink-0 select-none items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#f0ebe3]/90 px-1 pl-1.5 py-1 text-xs text-stone-700 ${grabClasses}`;
 
     const dot = document.createElement("span");
-    dot.className = "shrink-0 text-emerald-600";
+    dot.className = sqlTab
+      ? "shrink-0 text-sky-600"
+      : "shrink-0 text-emerald-600";
     dot.setAttribute("aria-hidden", "true");
     dot.textContent = "●";
 
     const tabBtn = document.createElement("div");
     tabBtn.setAttribute("role", "tab");
-    tabBtn.id = `table-preview-tab-${tab.id}`;
+    tabBtn.id = sqlTab
+      ? `sql-editor-tab-${sqlTab.id}`
+      : `table-preview-tab-${tableTab.id}`;
     tabBtn.tabIndex = isActive ? 0 : -1;
     tabBtn.className =
       "min-w-0 flex-1 cursor-grab truncate text-left outline-none hover:text-stone-900 active:cursor-grabbing";
-    tabBtn.setAttribute("aria-controls", `table-preview-panel-${tab.id}`);
+    tabBtn.setAttribute(
+      "aria-controls",
+      sqlTab ? `sql-editor-panel-${sqlTab.id}` : `table-preview-panel-${tableTab.id}`,
+    );
     tabBtn.setAttribute("aria-selected", isActive ? "true" : "false");
-    const label = `${tab.schemaName}.${tab.tableName}`;
-    tabBtn.textContent = label;
-    tabBtn.setAttribute("aria-label", `Preview ${label}`);
+    if (sqlTab) {
+      tabBtn.textContent = sqlTab.tabLabel;
+      tabBtn.setAttribute("aria-label", `Query ${sqlTab.tabLabel}`);
+    } else if (tableTab) {
+      const label = `${tableTab.schemaName}.${tableTab.tableName}`;
+      tabBtn.textContent = label;
+      tabBtn.setAttribute("aria-label", `Preview ${label}`);
+    }
     tabBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (skipTablePreviewTabClickAfterDrag) return;
-      if (activeTablePreviewTabId !== tab.id) {
-        activateTablePreviewTab(tab.id);
+      if (sqlTab) {
+        if (activeWorkspaceTabId !== sqlTab.id) activateSqlQueryTab(sqlTab.id);
+      } else if (tableTab) {
+        if (activeWorkspaceTabId !== tableTab.id) {
+          activateTablePreviewTab(tableTab.id);
+        }
       }
     });
     tabBtn.addEventListener("keydown", (e) => {
       if (e.key !== "Enter" && e.key !== " ") return;
       e.preventDefault();
-      if (activeTablePreviewTabId !== tab.id) {
-        activateTablePreviewTab(tab.id);
+      if (sqlTab) {
+        if (activeWorkspaceTabId !== sqlTab.id) activateSqlQueryTab(sqlTab.id);
+      } else if (tableTab) {
+        if (activeWorkspaceTabId !== tableTab.id) {
+          activateTablePreviewTab(tableTab.id);
+        }
       }
     });
 
@@ -1652,7 +1698,8 @@ function renderTabStrip() {
     closeBtn.textContent = "×";
     closeBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      closeTablePreviewTab(tab.id);
+      if (sqlTab) closeSqlQueryTab(sqlTab.id);
+      else if (tableTab) closeTablePreviewTab(tableTab.id);
     });
     closeBtn.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
@@ -1662,7 +1709,7 @@ function renderTabStrip() {
       if (e.button !== 0) return;
       if (closeBtn.contains(/** @type {Node} */ (e.target))) return;
       pointerTabDrag = {
-        tabId: tab.id,
+        tabId,
         startX: e.clientX,
         startY: e.clientY,
         dragging: false,
@@ -1674,7 +1721,7 @@ function renderTabStrip() {
       };
     });
     wrap.addEventListener("pointermove", (e) => {
-      if (!pointerTabDrag || pointerTabDrag.tabId !== tab.id) return;
+      if (!pointerTabDrag || pointerTabDrag.tabId !== tabId) return;
       const dx = e.clientX - pointerTabDrag.startX;
       const dy = e.clientY - pointerTabDrag.startY;
       if (
@@ -1715,14 +1762,14 @@ function renderTabStrip() {
         pointerTabDrag.ghostEl.style.left = `${e.clientX - pointerTabDrag.grabOffsetX}px`;
         pointerTabDrag.ghostEl.style.top = `${e.clientY - pointerTabDrag.grabOffsetY}px`;
 
-        const nextHover = pickTablePreviewTabDropTarget(
+        const nextHover = pickWorkspaceTabDropTarget(
           e.clientX,
           e.clientY,
           pointerTabDrag.ghostEl,
           pointerTabDrag.tabId,
         );
         if (nextHover !== pointerTabDrag.hoverTargetId) {
-          const strip = document.getElementById("table-preview-tabs");
+          const strip = document.getElementById("workspace-tabs");
           if (strip) {
             for (const node of strip.querySelectorAll("[data-tab-id]")) {
               node.classList.remove(
@@ -1751,7 +1798,7 @@ function renderTabStrip() {
       }
     });
     wrap.addEventListener("pointerup", (e) => {
-      if (!pointerTabDrag || pointerTabDrag.tabId !== tab.id) return;
+      if (!pointerTabDrag || pointerTabDrag.tabId !== tabId) return;
       const wasDrag = pointerTabDrag.dragging;
       const ghost = pointerTabDrag.ghostEl;
       const hoverFallback = pointerTabDrag.hoverTargetId;
@@ -1759,7 +1806,7 @@ function renderTabStrip() {
       let dropTargetId = null;
       if (wasDrag) {
         dropTargetId =
-          pickTablePreviewTabDropTarget(e.clientX, e.clientY, ghost, tab.id) ??
+          pickWorkspaceTabDropTarget(e.clientX, e.clientY, ghost, tabId) ??
           hoverFallback;
       }
       cleanupTablePreviewTabDragVisuals();
@@ -1774,13 +1821,13 @@ function renderTabStrip() {
         window.setTimeout(() => {
           skipTablePreviewTabClickAfterDrag = false;
         }, 0);
-        if (dropTargetId && dropTargetId !== tab.id) {
-          swapTablePreviewTabsById(tab.id, dropTargetId);
+        if (dropTargetId && dropTargetId !== tabId) {
+          swapWorkspaceTabsById(tabId, dropTargetId);
         }
       }
     });
     wrap.addEventListener("pointercancel", (e) => {
-      if (!pointerTabDrag || pointerTabDrag.tabId !== tab.id) return;
+      if (!pointerTabDrag || pointerTabDrag.tabId !== tabId) return;
       cleanupTablePreviewTabDragVisuals();
       pointerTabDrag = null;
       try {
@@ -1788,69 +1835,6 @@ function renderTabStrip() {
       } catch (_) {
         /* ignore */
       }
-    });
-
-    wrap.appendChild(dot);
-    wrap.appendChild(tabBtn);
-    wrap.appendChild(closeBtn);
-    tabsStrip.appendChild(wrap);
-  }
-}
-
-function renderSqlEditorTabStrip() {
-  const tabsStrip = document.getElementById("sql-editor-tabs");
-  if (!tabsStrip) return;
-  tabsStrip.replaceChildren();
-
-  for (const tab of sqlQueryTabs) {
-    const isActive = tab.id === activeSqlQueryTabId;
-    const wrap = document.createElement("div");
-    wrap.dataset.sqlTabId = tab.id;
-    wrap.className = isActive
-      ? "flex min-w-0 max-w-[14rem] shrink-0 select-none items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#faf8f4] px-1 pl-1.5 py-1 text-xs text-stone-800 ring-1 ring-stone-300/40"
-      : "flex min-w-0 max-w-[14rem] shrink-0 select-none items-center gap-0.5 rounded-t border border-b-0 border-stone-200/90 bg-[#f0ebe3]/90 px-1 pl-1.5 py-1 text-xs text-stone-700";
-
-    const dot = document.createElement("span");
-    dot.className = "shrink-0 text-sky-600";
-    dot.setAttribute("aria-hidden", "true");
-    dot.textContent = "●";
-
-    const tabBtn = document.createElement("div");
-    tabBtn.setAttribute("role", "tab");
-    tabBtn.id = `sql-editor-tab-${tab.id}`;
-    tabBtn.tabIndex = isActive ? 0 : -1;
-    tabBtn.className =
-      "min-w-0 flex-1 cursor-pointer truncate text-left outline-none hover:text-stone-900";
-    tabBtn.setAttribute("aria-controls", `sql-editor-panel-${tab.id}`);
-    tabBtn.setAttribute("aria-selected", isActive ? "true" : "false");
-    tabBtn.textContent = tab.tabLabel;
-    tabBtn.setAttribute("aria-label", `Query ${tab.tabLabel}`);
-    tabBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (activeSqlQueryTabId !== tab.id) {
-        activateSqlQueryTab(tab.id);
-      }
-    });
-    tabBtn.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter" && e.key !== " ") return;
-      e.preventDefault();
-      if (activeSqlQueryTabId !== tab.id) {
-        activateSqlQueryTab(tab.id);
-      }
-    });
-
-    const closeBtn = document.createElement("button");
-    closeBtn.type = "button";
-    closeBtn.className =
-      "shrink-0 cursor-pointer rounded px-1 text-stone-500 hover:bg-stone-200/80 hover:text-stone-800";
-    closeBtn.setAttribute("aria-label", "Close tab");
-    closeBtn.textContent = "×";
-    closeBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      closeSqlQueryTab(tab.id);
-    });
-    closeBtn.addEventListener("pointerdown", (e) => {
-      e.stopPropagation();
     });
 
     wrap.appendChild(dot);
@@ -1867,9 +1851,11 @@ function renderSqlEditorTabStrip() {
  */
 function activateSqlQueryTab(tabId) {
   if (!sqlQueryTabs.some((t) => t.id === tabId)) return;
+  activeWorkspaceTabId = tabId;
   activeSqlQueryTabId = tabId;
-  syncSqlQueryPanelVisibility();
-  renderSqlEditorTabStrip();
+  activeTablePreviewTabId = null;
+  syncWorkspacePanelVisibility();
+  renderWorkspaceTabStrip();
   const t = sqlQueryTabs.find((x) => x.id === tabId);
   if (t) {
     window.requestAnimationFrame(() => {
@@ -1885,32 +1871,43 @@ function closeSqlQueryTab(tabId) {
   const idx = sqlQueryTabs.findIndex((t) => t.id === tabId);
   if (idx === -1) return;
 
-  const wasActive = activeSqlQueryTabId === tabId;
+  const wasActiveWorkspace = activeWorkspaceTabId === tabId;
+  const wi = workspaceTabOrder.indexOf(tabId);
   const tab = sqlQueryTabs[idx];
   tab.panelEl.remove();
 
   sqlQueryTabs.splice(idx, 1);
+  removeIdFromWorkspaceOrder(tabId);
 
   if (sqlQueryTabs.length === 0) {
     activeSqlQueryTabId = null;
-    updateSqlEditorAreaVisibility();
-    renderSqlEditorTabStrip();
-    return;
   }
 
-  if (wasActive) {
-    const nextIdx = idx < sqlQueryTabs.length ? idx : idx - 1;
-    const nextTab = sqlQueryTabs[nextIdx];
-    if (nextTab) {
-      activeSqlQueryTabId = nextTab.id;
+  if (wasActiveWorkspace) {
+    const nextId = workspaceTabOrder[wi] ?? workspaceTabOrder[wi - 1] ?? null;
+    if (nextId) {
+      if (sqlQueryTabs.some((t) => t.id === nextId)) {
+        activateSqlQueryTab(nextId);
+      } else {
+        activateTablePreviewTab(nextId);
+      }
+    } else {
+      activeWorkspaceTabId = null;
+      activeSqlQueryTabId = null;
+      activeTablePreviewTabId = null;
+      selectedTablePreviewKey = null;
     }
   }
 
-  syncSqlQueryPanelVisibility();
-  updateSqlEditorAreaVisibility();
-  renderSqlEditorTabStrip();
-  if (wasActive && activeSqlQueryTabId) {
-    const nt = sqlQueryTabs.find((x) => x.id === activeSqlQueryTabId);
+  updateWorkspaceAreaVisibility();
+  syncWorkspacePanelVisibility();
+  renderWorkspaceTabStrip();
+  if (
+    wasActiveWorkspace &&
+    activeWorkspaceTabId &&
+    sqlQueryTabs.some((t) => t.id === activeWorkspaceTabId)
+  ) {
+    const nt = sqlQueryTabs.find((x) => x.id === activeWorkspaceTabId);
     if (nt) {
       window.requestAnimationFrame(() => {
         nt.textareaEl.focus();
@@ -1936,7 +1933,7 @@ function openNewSqlQueryTab(profile, opts) {
     lineNumbersPreEl,
   } = createSqlQueryPanelElements(tabId);
 
-  const panelsRoot = document.getElementById("sql-editor-panels");
+  const panelsRoot = document.getElementById("workspace-panels");
   if (!panelsRoot) return;
   panelsRoot.appendChild(panelEl);
 
@@ -1958,11 +1955,15 @@ function openNewSqlQueryTab(profile, opts) {
     lineNumbersPreEl,
   };
   sqlQueryTabs.push(tab);
+  workspaceTabOrder.push(tabId);
+  activeWorkspaceTabId = tabId;
   activeSqlQueryTabId = tabId;
+  activeTablePreviewTabId = null;
 
-  updateSqlEditorAreaVisibility();
-  syncSqlQueryPanelVisibility();
-  renderSqlEditorTabStrip();
+  updateWorkspaceAreaVisibility();
+  syncWorkspacePanelVisibility();
+  syncWorkspacePanelsDomOrder();
+  renderWorkspaceTabStrip();
   window.requestAnimationFrame(() => {
     textareaEl.focus();
     const len = textareaEl.value.length;
@@ -1977,30 +1978,52 @@ function removeSqlQueryTabsForConnection(connectionId) {
   const toRemove = sqlQueryTabs.filter((t) => t.connectionId === connectionId);
   if (toRemove.length === 0) return;
 
+  const removeIds = new Set(toRemove.map((t) => t.id));
+  const wasActiveRemoved = removeIds.has(activeWorkspaceTabId ?? "");
+  const wi =
+    wasActiveRemoved && activeWorkspaceTabId
+      ? workspaceTabOrder.indexOf(activeWorkspaceTabId)
+      : -1;
+
   for (const t of toRemove) {
     t.panelEl.remove();
+    removeIdFromWorkspaceOrder(t.id);
   }
   sqlQueryTabs = sqlQueryTabs.filter((t) => t.connectionId !== connectionId);
 
   if (sqlQueryTabs.length === 0) {
     activeSqlQueryTabId = null;
-    const tabsStrip = document.getElementById("sql-editor-tabs");
-    if (tabsStrip) tabsStrip.replaceChildren();
-    updateSqlEditorAreaVisibility();
-    return;
   }
 
-  if (
-    !activeSqlQueryTabId ||
+  if (wasActiveRemoved) {
+    const nextId =
+      wi >= 0
+        ? (workspaceTabOrder[wi] ?? workspaceTabOrder[wi - 1] ?? null)
+        : null;
+    if (nextId) {
+      if (sqlQueryTabs.some((t) => t.id === nextId)) {
+        activateSqlQueryTab(nextId);
+      } else {
+        activateTablePreviewTab(nextId);
+      }
+    } else {
+      activeWorkspaceTabId = null;
+      activeSqlQueryTabId = null;
+      activeTablePreviewTabId = null;
+      selectedTablePreviewKey = null;
+    }
+  } else if (
+    activeSqlQueryTabId &&
     !sqlQueryTabs.some((t) => t.id === activeSqlQueryTabId)
   ) {
     const last = sqlQueryTabs[sqlQueryTabs.length - 1];
-    activeSqlQueryTabId = last.id;
+    activeSqlQueryTabId = last?.id ?? null;
   }
 
-  updateSqlEditorAreaVisibility();
-  syncSqlQueryPanelVisibility();
-  renderSqlEditorTabStrip();
+  updateWorkspaceAreaVisibility();
+  syncWorkspacePanelVisibility();
+  syncWorkspacePanelsDomOrder();
+  renderWorkspaceTabStrip();
 }
 
 /**
@@ -2040,11 +2063,13 @@ function openEmptySqlQueryForConnection(connectionId) {
  */
 function activateTablePreviewTab(tabId) {
   if (!tablePreviewTabs.some((t) => t.id === tabId)) return;
+  activeWorkspaceTabId = tabId;
   activeTablePreviewTabId = tabId;
+  activeSqlQueryTabId = null;
   const tab = tablePreviewTabs.find((t) => t.id === tabId);
   if (tab) selectedTablePreviewKey = tab.previewKey;
-  syncTabPanelVisibility();
-  renderTabStrip();
+  syncWorkspacePanelVisibility();
+  renderWorkspaceTabStrip();
   renderConnections(lastConnections);
 }
 
@@ -2055,31 +2080,53 @@ function closeTablePreviewTab(tabId) {
   const idx = tablePreviewTabs.findIndex((t) => t.id === tabId);
   if (idx === -1) return;
 
-  const wasActive = activeTablePreviewTabId === tabId;
+  const wasActiveWorkspace = activeWorkspaceTabId === tabId;
+  const wi = workspaceTabOrder.indexOf(tabId);
   const tab = tablePreviewTabs[idx];
   tab.panelEl.remove();
 
   tablePreviewTabs.splice(idx, 1);
+  removeIdFromWorkspaceOrder(tabId);
 
   if (tablePreviewTabs.length === 0) {
     activeTablePreviewTabId = null;
     selectedTablePreviewKey = null;
-    renderTablePreviewPlaceholder();
+  }
+
+  if (wasActiveWorkspace) {
+    const nextId = workspaceTabOrder[wi] ?? workspaceTabOrder[wi - 1] ?? null;
+    if (nextId) {
+      if (sqlQueryTabs.some((t) => t.id === nextId)) {
+        activateSqlQueryTab(nextId);
+      } else {
+        activateTablePreviewTab(nextId);
+      }
+    } else {
+      activeWorkspaceTabId = null;
+      activeSqlQueryTabId = null;
+      activeTablePreviewTabId = null;
+      selectedTablePreviewKey = null;
+    }
+  } else if (
+    activeTablePreviewTabId &&
+    !tablePreviewTabs.some((t) => t.id === activeTablePreviewTabId)
+  ) {
+    const last = tablePreviewTabs[tablePreviewTabs.length - 1];
+    activeTablePreviewTabId = last?.id ?? null;
+    selectedTablePreviewKey = last?.previewKey ?? null;
+  }
+
+  if (workspaceTabOrder.length === 0) {
+    updateWorkspaceAreaVisibility();
+    syncWorkspacePanelVisibility();
+    renderWorkspaceTabStrip();
     renderConnections(lastConnections);
     return;
   }
 
-  if (wasActive) {
-    const nextIdx = idx < tablePreviewTabs.length ? idx : idx - 1;
-    const nextTab = tablePreviewTabs[nextIdx];
-    if (nextTab) {
-      activeTablePreviewTabId = nextTab.id;
-      selectedTablePreviewKey = nextTab.previewKey;
-    }
-  }
-
-  syncTabPanelVisibility();
-  renderTabStrip();
+  updateWorkspaceAreaVisibility();
+  syncWorkspacePanelVisibility();
+  renderWorkspaceTabStrip();
   renderConnections(lastConnections);
 }
 
@@ -2093,6 +2140,7 @@ function removeTabsForConnection(connectionId) {
   if (toRemove.length > 0) {
     for (const t of toRemove) {
       t.panelEl.remove();
+      removeIdFromWorkspaceOrder(t.id);
     }
     tablePreviewTabs = tablePreviewTabs.filter(
       (t) => t.connectionId !== connectionId,
@@ -2104,29 +2152,44 @@ function removeTabsForConnection(connectionId) {
   if (tablePreviewTabs.length === 0) {
     activeTablePreviewTabId = null;
     selectedTablePreviewKey = null;
-    const tabsStrip = document.getElementById("table-preview-tabs");
-    if (tabsStrip) tabsStrip.replaceChildren();
-    const area = document.getElementById("table-preview-area");
-    if (area) area.classList.add("hidden");
-    return;
   }
 
   if (
-    !activeTablePreviewTabId ||
+    activeTablePreviewTabId &&
     !tablePreviewTabs.some((t) => t.id === activeTablePreviewTabId)
   ) {
     const last = tablePreviewTabs[tablePreviewTabs.length - 1];
-    activeTablePreviewTabId = last.id;
-    selectedTablePreviewKey = last.previewKey;
-  } else {
+    activeTablePreviewTabId = last?.id ?? null;
+    selectedTablePreviewKey = last?.previewKey ?? null;
+  } else if (activeTablePreviewTabId) {
     const t = tablePreviewTabs.find((x) => x.id === activeTablePreviewTabId);
     selectedTablePreviewKey = t?.previewKey ?? null;
   }
 
-  const area = document.getElementById("table-preview-area");
-  if (area) area.classList.remove("hidden");
-  syncTabPanelVisibility();
-  renderTabStrip();
+  if (
+    activeWorkspaceTabId &&
+    !workspaceTabOrder.includes(activeWorkspaceTabId)
+  ) {
+    const nextId =
+      workspaceTabOrder[workspaceTabOrder.length - 1] ?? null;
+    if (nextId) {
+      if (sqlQueryTabs.some((t) => t.id === nextId)) {
+        activateSqlQueryTab(nextId);
+      } else {
+        activateTablePreviewTab(nextId);
+      }
+    } else {
+      activeWorkspaceTabId = null;
+      activeSqlQueryTabId = null;
+      activeTablePreviewTabId = null;
+      selectedTablePreviewKey = null;
+    }
+  }
+
+  updateWorkspaceAreaVisibility();
+  syncWorkspacePanelVisibility();
+  syncWorkspacePanelsDomOrder();
+  renderWorkspaceTabStrip();
 }
 
 /**
@@ -2134,28 +2197,46 @@ function removeTabsForConnection(connectionId) {
  * @param {string} keepId
  */
 function finalizeActiveAfterBulkClose(keepId) {
+  const anchor = tablePreviewTabs.find((x) => x.id === keepId);
+  activeTablePreviewTabId = keepId;
+  selectedTablePreviewKey = anchor?.previewKey ?? null;
+
   if (tablePreviewTabs.length === 0) {
     activeTablePreviewTabId = null;
     selectedTablePreviewKey = null;
-    renderTablePreviewPlaceholder();
-    renderConnections(lastConnections);
+  }
+
+  if (
+    !activeWorkspaceTabId ||
+    !workspaceTabOrder.includes(activeWorkspaceTabId)
+  ) {
+    const nextId =
+      workspaceTabOrder.includes(keepId) && tablePreviewTabs.length > 0
+        ? keepId
+        : (workspaceTabOrder[workspaceTabOrder.length - 1] ?? null);
+    if (nextId) {
+      if (sqlQueryTabs.some((t) => t.id === nextId)) {
+        activateSqlQueryTab(nextId);
+      } else {
+        activateTablePreviewTab(nextId);
+      }
+    } else {
+      activeWorkspaceTabId = null;
+      activeSqlQueryTabId = null;
+      activeTablePreviewTabId = null;
+      selectedTablePreviewKey = null;
+      updateWorkspaceAreaVisibility();
+      syncWorkspacePanelVisibility();
+      renderWorkspaceTabStrip();
+      renderConnections(lastConnections);
+    }
     return;
   }
-  if (
-    !activeTablePreviewTabId ||
-    !tablePreviewTabs.some((t) => t.id === activeTablePreviewTabId)
-  ) {
-    activeTablePreviewTabId = keepId;
-    const t = tablePreviewTabs.find((x) => x.id === keepId);
-    selectedTablePreviewKey = t?.previewKey ?? null;
-  } else {
-    const t = tablePreviewTabs.find((x) => x.id === activeTablePreviewTabId);
-    selectedTablePreviewKey = t?.previewKey ?? null;
-  }
-  const area = document.getElementById("table-preview-area");
-  if (area) area.classList.remove("hidden");
-  syncTabPanelVisibility();
-  renderTabStrip();
+
+  updateWorkspaceAreaVisibility();
+  syncWorkspacePanelVisibility();
+  syncWorkspacePanelsDomOrder();
+  renderWorkspaceTabStrip();
   renderConnections(lastConnections);
 }
 
@@ -2169,6 +2250,7 @@ function closeTablePreviewTabsToLeftOf(tabId) {
   const toRemove = tablePreviewTabs.slice(0, idx);
   for (const t of toRemove) {
     t.panelEl.remove();
+    removeIdFromWorkspaceOrder(t.id);
   }
   tablePreviewTabs = tablePreviewTabs.slice(idx);
   finalizeActiveAfterBulkClose(tabId);
@@ -2184,6 +2266,7 @@ function closeTablePreviewTabsToRightOf(tabId) {
   const toRemove = tablePreviewTabs.slice(idx + 1);
   for (const t of toRemove) {
     t.panelEl.remove();
+    removeIdFromWorkspaceOrder(t.id);
   }
   tablePreviewTabs = tablePreviewTabs.slice(0, idx + 1);
   finalizeActiveAfterBulkClose(tabId);
@@ -2191,7 +2274,6 @@ function closeTablePreviewTabsToRightOf(tabId) {
 
 function closeAllTablePreviewTabs() {
   renderTablePreviewPlaceholder();
-  renderConnections(lastConnections);
 }
 
 /**
@@ -2204,7 +2286,7 @@ function openNewTableTab(profile, schemaName, tableName) {
   const tabId = `tab-${nextTablePreviewTabSeq++}`;
   const { panelEl, headingEl, metaEl, bodyEl } = createTabPanelElements(tabId);
 
-  const panelsRoot = document.getElementById("table-preview-panels");
+  const panelsRoot = document.getElementById("workspace-panels");
   if (!panelsRoot) return;
   panelsRoot.appendChild(panelEl);
 
@@ -2221,29 +2303,52 @@ function openNewTableTab(profile, schemaName, tableName) {
     bodyEl,
   };
   tablePreviewTabs.push(tab);
+  workspaceTabOrder.push(tabId);
+  activeWorkspaceTabId = tabId;
   activeTablePreviewTabId = tabId;
+  activeSqlQueryTabId = null;
   selectedTablePreviewKey = key;
 
-  const area = document.getElementById("table-preview-area");
-  if (area) area.classList.remove("hidden");
-
-  syncTabPanelVisibility();
-  renderTabStrip();
+  updateWorkspaceAreaVisibility();
+  syncWorkspacePanelVisibility();
+  syncWorkspacePanelsDomOrder();
+  renderWorkspaceTabStrip();
   renderConnections(lastConnections);
 
   void loadTablePreview(tabId, profile, schemaName, tableName);
 }
 
 function renderTablePreviewPlaceholder() {
-  const area = document.getElementById("table-preview-area");
-  if (area) area.classList.add("hidden");
-  const tabsStrip = document.getElementById("table-preview-tabs");
-  const panelsRoot = document.getElementById("table-preview-panels");
-  if (tabsStrip) tabsStrip.replaceChildren();
-  if (panelsRoot) panelsRoot.replaceChildren();
+  for (const t of tablePreviewTabs) {
+    t.panelEl.remove();
+  }
+  const tableIds = new Set(tablePreviewTabs.map((t) => t.id));
+  workspaceTabOrder = workspaceTabOrder.filter((id) => !tableIds.has(id));
   tablePreviewTabs = [];
   activeTablePreviewTabId = null;
   selectedTablePreviewKey = null;
+
+  if (
+    activeWorkspaceTabId &&
+    tableIds.has(activeWorkspaceTabId)
+  ) {
+    const nextId =
+      workspaceTabOrder[workspaceTabOrder.length - 1] ?? null;
+    if (nextId) {
+      if (sqlQueryTabs.some((t) => t.id === nextId)) {
+        activateSqlQueryTab(nextId);
+      }
+    } else {
+      activeWorkspaceTabId = null;
+      activeSqlQueryTabId = null;
+    }
+  }
+
+  updateWorkspaceAreaVisibility();
+  syncWorkspacePanelVisibility();
+  syncWorkspacePanelsDomOrder();
+  renderWorkspaceTabStrip();
+  renderConnections(lastConnections);
 }
 
 /**
@@ -4331,7 +4436,7 @@ function initTableLeafContextMenu() {
 
 function initTablePreviewTabContextMenu() {
   const menu = document.getElementById("table-preview-tab-context-menu");
-  const tabsStrip = document.getElementById("table-preview-tabs");
+  const tabsStrip = document.getElementById("workspace-tabs");
   const btnRight = document.getElementById("context-tab-close-right");
   const btnLeft = document.getElementById("context-tab-close-left");
   const btnAll = document.getElementById("context-tab-close-all");
@@ -4354,11 +4459,27 @@ function initTablePreviewTabContextMenu() {
    */
   function showMenu(e, tabId) {
     e.preventDefault();
-    const idx = tablePreviewTabs.findIndex((t) => t.id === tabId);
-    if (idx === -1) return;
+    if (!tablePreviewTabs.some((t) => t.id === tabId)) return;
+    const i = workspaceTabOrder.indexOf(tabId);
+    if (i === -1) return;
+    const tableIdSet = new Set(tablePreviewTabs.map((t) => t.id));
+    let hasTableLeft = false;
+    let hasTableRight = false;
+    for (let k = 0; k < i; k++) {
+      if (tableIdSet.has(workspaceTabOrder[k])) {
+        hasTableLeft = true;
+        break;
+      }
+    }
+    for (let k = i + 1; k < workspaceTabOrder.length; k++) {
+      if (tableIdSet.has(workspaceTabOrder[k])) {
+        hasTableRight = true;
+        break;
+      }
+    }
     tablePreviewTabContextMenuTargetId = tabId;
-    btnLeft.disabled = idx === 0;
-    btnRight.disabled = idx >= tablePreviewTabs.length - 1;
+    btnLeft.disabled = !hasTableLeft;
+    btnRight.disabled = !hasTableRight;
     btnAll.disabled = tablePreviewTabs.length === 0;
     btnClose.disabled = false;
 

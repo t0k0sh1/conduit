@@ -392,37 +392,20 @@
 
         <main class="flex min-h-0 min-w-0 flex-1 flex-col bg-[#faf8f4]">
           <div
-            id="sql-editor-area"
+            id="workspace-area"
             role="region"
-            aria-label="SQL console"
-            class="hidden flex min-h-0 min-w-0 flex-1 flex-col border-b border-stone-200/90"
+            aria-label="Workspace"
+            class="hidden flex min-h-0 min-w-0 flex-1 flex-col"
           >
             <div
-              id="sql-editor-tabs"
+              id="workspace-tabs"
               role="tablist"
-              aria-label="SQL console tabs"
+              aria-label="Workspace tabs"
               class="flex shrink-0 min-h-0 select-none items-center gap-1 overflow-x-auto border-b border-stone-200/90 bg-[#f3efe6]/80 px-2 py-1"
             ></div>
             <div class="min-h-0 flex-1 p-2">
               <div
-                id="sql-editor-panels"
-                class="flex h-full min-h-[8rem] flex-col"
-              ></div>
-            </div>
-          </div>
-          <div
-            id="table-preview-area"
-            class="hidden flex min-h-0 min-w-0 flex-1 flex-col"
-          >
-            <div
-              id="table-preview-tabs"
-              role="tablist"
-              aria-label="Table previews"
-              class="flex shrink-0 min-h-0 select-none items-center gap-1 overflow-x-auto border-b border-stone-200/90 bg-[#f3efe6]/80 px-2 py-1"
-            ></div>
-            <div class="min-h-0 flex-1 p-3">
-              <div
-                id="table-preview-panels"
+                id="workspace-panels"
                 class="flex h-full min-h-[12rem] flex-col"
               ></div>
             </div>
