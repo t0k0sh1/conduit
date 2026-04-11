@@ -287,6 +287,10 @@ export async function fetchRelationObjects(profile, schema, kind) {
  * @param {{ limit?: number }} [options]
  * @returns {Promise<{
  *   columns: string[];
+ *   columnDisplayHints: Array<{
+ *     charMaxLen: number | null;
+ *     numericPrecision: number | null;
+ *   } | null>;
  *   rows: unknown[];
  *   metadata: {
  *     statistics: null | Record<string, unknown>;

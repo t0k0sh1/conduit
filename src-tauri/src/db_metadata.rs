@@ -122,11 +122,23 @@ pub struct TableMetadata {
     pub indexes: Vec<IndexInfo>,
 }
 
+/// Display-width hints from PostgreSQL `pg_attribute` / `pg_type` (aligned with `TablePreview.columns`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnDisplayHint {
+    /// `varchar` / `char` (`bpchar`) / `bit` / `varbit` length from typmod when present.
+    pub char_max_len: Option<i32>,
+    /// `numeric` precision from typmod when present.
+    pub numeric_precision: Option<i32>,
+}
+
 /// Read-only row preview for a table, view, or materialized view (`SELECT * ... LIMIT`).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TablePreview {
     pub columns: Vec<String>,
+    /// Same length as `columns`; `None` when the catalog provides no width hint.
+    pub column_display_hints: Vec<Option<ColumnDisplayHint>>,
     pub rows: Vec<serde_json::Value>,
     pub metadata: TableMetadata,
 }
@@ -563,10 +575,22 @@ pub async fn fetch_table_preview(
         async {
             client
                 .query(
-                    "SELECT a.attname::text AS column_name \
+                    "SELECT a.attname::text AS column_name, \
+                       CASE \
+                         WHEN t.typname IN ('varchar', 'bpchar', 'bit', 'varbit') \
+                           AND a.atttypmod > 0 \
+ THEN (a.atttypmod - 4)::int \
+                         ELSE NULL \
+                       END AS char_max_len, \
+                       CASE \
+                         WHEN t.typname = 'numeric' AND a.atttypmod > 0 \
+                         THEN ((a.atttypmod - 4) >> 16)::int \
+                         ELSE NULL \
+                       END AS numeric_precision \
                      FROM pg_catalog.pg_attribute a \
                      JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
                      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                     JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
                      WHERE n.nspname = $1 AND c.relname = $2 \
                        AND a.attnum > 0 AND NOT a.attisdropped \
                      ORDER BY a.attnum",
@@ -584,10 +608,22 @@ pub async fn fetch_table_preview(
         },
     )?;
 
-    let columns: Vec<String> = col_rows
-        .into_iter()
-        .map(|r| r.get::<_, String>(0))
-        .collect();
+    let mut columns = Vec::with_capacity(col_rows.len());
+    let mut column_display_hints = Vec::with_capacity(col_rows.len());
+    for r in col_rows {
+        columns.push(r.get::<_, String>(0));
+        let char_max_len: Option<i32> = r.get(1);
+        let numeric_precision: Option<i32> = r.get(2);
+        let hint = if char_max_len.is_none() && numeric_precision.is_none() {
+            None
+        } else {
+            Some(ColumnDisplayHint {
+                char_max_len,
+                numeric_precision,
+            })
+        };
+        column_display_hints.push(hint);
+    }
 
     let json_text: String = data_row.get(0);
     let rows: Vec<serde_json::Value> =
@@ -595,6 +631,7 @@ pub async fn fetch_table_preview(
 
     Ok(TablePreview {
         columns,
+        column_display_hints,
         rows,
         metadata,
     })

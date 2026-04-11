@@ -2316,6 +2316,129 @@ function formatSqlResultCell(value) {
   return { type: "text", text: String(value) };
 }
 
+const RESIZABLE_TABLE_MIN_COL_PX = 40;
+
+/** Ignore sub-pixel / accidental moves so a click does not convert `ch` widths to px or nudge the column. */
+const RESIZABLE_TABLE_DRAG_THRESHOLD_PX = 2;
+
+const RESIZABLE_TABLE_CELL_CLASS =
+  "min-w-0 whitespace-pre-wrap break-words px-2 py-1.5 align-top overflow-hidden";
+
+const RESIZABLE_TABLE_DEFAULT_COL_WIDTH = "14ch";
+
+/**
+ * @param {{ charMaxLen?: number | null; numericPrecision?: number | null } | null | undefined} hint
+ * @returns {string}
+ */
+function initialColWidthCssFromHint(hint) {
+  if (!hint) return RESIZABLE_TABLE_DEFAULT_COL_WIDTH;
+  if (hint.charMaxLen != null && hint.charMaxLen > 0) {
+    const ch = Math.min(80, Math.max(6, hint.charMaxLen + 2));
+    return `${ch}ch`;
+  }
+  if (hint.numericPrecision != null && hint.numericPrecision > 0) {
+    const ch = Math.min(40, Math.max(8, hint.numericPrecision + 4));
+    return `${ch}ch`;
+  }
+  return RESIZABLE_TABLE_DEFAULT_COL_WIDTH;
+}
+
+/**
+ * @param {HTMLTableElement} table
+ * @param {HTMLTableColElement[]} colElements
+ * @param {HTMLTableCellElement[]} headerCells
+ */
+function installResizableTableColumns(table, colElements, headerCells) {
+  table.style.tableLayout = "fixed";
+  const endDrag = () => {
+    document.body.classList.remove("select-none");
+  };
+  /**
+   * @param {number} colIdx
+   * @param {number} widthPx
+   */
+  const applyColumnWidthPx = (colIdx, widthPx) => {
+    const w = `${widthPx}px`;
+    colElements[colIdx].style.width = w;
+    for (let r = 0; r < table.rows.length; r++) {
+      const cell = table.rows[r].cells[colIdx];
+      if (cell) cell.style.width = w;
+    }
+  };
+  for (let i = 0; i < colElements.length; i++) {
+    const col = colElements[i];
+    const th = headerCells[i];
+    th.classList.add("relative");
+    const handle = document.createElement("div");
+    // Straddle the column edge without transform (avoids visual/hit-test drift on reflow). `min-w-0` on th allows shrinking below content.
+    handle.className =
+      "absolute -right-1 top-0 z-10 h-full w-2 cursor-col-resize touch-none select-none hover:bg-stone-300/40";
+    handle.setAttribute("aria-label", "Resize column");
+    handle.title = "Resize column";
+
+    /** @type {number | null} */
+    let activePointerId = null;
+    let startX = 0;
+    let startWidthPx = 0;
+    let resizeActive = false;
+
+    const onPointerMove = (e) => {
+      if (activePointerId !== e.pointerId) return;
+      const dx = e.clientX - startX;
+      if (!resizeActive) {
+        if (Math.abs(dx) < RESIZABLE_TABLE_DRAG_THRESHOLD_PX) return;
+        resizeActive = true;
+      }
+      const next = Math.max(
+        RESIZABLE_TABLE_MIN_COL_PX,
+        Math.round(startWidthPx + dx),
+      );
+      applyColumnWidthPx(i, next);
+    };
+
+    const finish = (e) => {
+      if (activePointerId !== e.pointerId) return;
+      try {
+        handle.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      activePointerId = null;
+      resizeActive = false;
+      handle.removeEventListener("pointermove", onPointerMove);
+      handle.removeEventListener("pointerup", finish);
+      handle.removeEventListener("pointercancel", finish);
+      endDrag();
+    };
+
+    handle.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      activePointerId = e.pointerId;
+      resizeActive = false;
+      startX = e.clientX;
+      startWidthPx = th.offsetWidth;
+      document.body.classList.add("select-none");
+      handle.addEventListener("pointermove", onPointerMove);
+      handle.addEventListener("pointerup", finish);
+      handle.addEventListener("pointercancel", finish);
+      try {
+        handle.setPointerCapture(e.pointerId);
+      } catch {
+        activePointerId = null;
+        resizeActive = false;
+        handle.removeEventListener("pointermove", onPointerMove);
+        handle.removeEventListener("pointerup", finish);
+        handle.removeEventListener("pointercancel", finish);
+        endDrag();
+      }
+    });
+
+    th.appendChild(handle);
+  }
+}
+
 /**
  * @param {HTMLElement} container
  * @param {string[]} columns
@@ -2323,17 +2446,32 @@ function formatSqlResultCell(value) {
  */
 function renderSqlRowsTable(container, columns, rows) {
   const table = document.createElement("table");
+  // No min-w-full: otherwise the table stays viewport-wide and slack is reallocated when a column narrows, which moves grips to the right.
   table.className =
-    "min-w-full w-max border-collapse text-left text-xs text-stone-800";
+    "w-max min-w-0 border-collapse text-left text-xs text-stone-800";
+
+  const colgroup = document.createElement("colgroup");
+  /** @type {HTMLTableColElement[]} */
+  const colElements = [];
+  for (let c = 0; c < columns.length; c++) {
+    const colEl = document.createElement("col");
+    colEl.style.width = RESIZABLE_TABLE_DEFAULT_COL_WIDTH;
+    colgroup.appendChild(colEl);
+    colElements.push(colEl);
+  }
+  table.appendChild(colgroup);
 
   const thead = document.createElement("thead");
   const trh = document.createElement("tr");
+  /** @type {HTMLTableCellElement[]} */
+  const headerCells = [];
   for (const col of columns) {
     const th = document.createElement("th");
     th.scope = "col";
     th.className =
-      "sticky top-0 border-b border-stone-200/90 bg-[#fffcf7] px-2 py-2 font-medium text-stone-700";
+      "min-w-0 break-words sticky top-0 border-b border-stone-200/90 bg-[#fffcf7] px-2 py-2 font-medium text-stone-700";
     th.textContent = col;
+    headerCells.push(th);
     trh.appendChild(th);
   }
   thead.appendChild(trh);
@@ -2345,8 +2483,7 @@ function renderSqlRowsTable(container, columns, rows) {
     tr.className = "border-b border-stone-100/90";
     for (let c = 0; c < columns.length; c++) {
       const td = document.createElement("td");
-      td.className =
-        "max-w-[24rem] whitespace-pre-wrap break-words px-2 py-1.5 align-top";
+      td.className = RESIZABLE_TABLE_CELL_CLASS;
       const cell = formatSqlResultCell(row[c]);
       if (cell.type === "null") {
         const span = document.createElement("span");
@@ -2361,6 +2498,7 @@ function renderSqlRowsTable(container, columns, rows) {
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
+  installResizableTableColumns(table, colElements, headerCells);
   container.appendChild(table);
 }
 
@@ -2571,7 +2709,15 @@ async function runSqlQueryForTab(tabId) {
 /**
  * @param {HTMLElement} bodyEl
  * @param {HTMLElement} metaEl
- * @param {{ columns: string[]; rows: unknown[]; metadata?: TablePreviewMetadata }} data
+ * @param {{
+ *   columns: string[];
+ *   columnDisplayHints?: Array<{
+ *     charMaxLen?: number | null;
+ *     numericPrecision?: number | null;
+ *   } | null>;
+ *   rows: unknown[];
+ *   metadata?: TablePreviewMetadata;
+ * }} data
  * @param {string} previewTabId
  */
 function renderTablePreviewTable(bodyEl, metaEl, data, previewTabId) {
@@ -2754,10 +2900,25 @@ function renderTablePreviewTable(bodyEl, metaEl, data, previewTabId) {
 
   const table = document.createElement("table");
   table.className =
-    "min-w-full w-max border-collapse text-left text-xs text-stone-800";
+    "w-max min-w-0 border-collapse text-left text-xs text-stone-800";
+
+  const hints = data.columnDisplayHints ?? [];
+
+  const colgroup = document.createElement("colgroup");
+  /** @type {HTMLTableColElement[]} */
+  const colElements = [];
+  for (let ci = 0; ci < data.columns.length; ci++) {
+    const colEl = document.createElement("col");
+    colEl.style.width = initialColWidthCssFromHint(hints[ci] ?? null);
+    colgroup.appendChild(colEl);
+    colElements.push(colEl);
+  }
+  table.appendChild(colgroup);
 
   const thead = document.createElement("thead");
   const trh = document.createElement("tr");
+  /** @type {HTMLTableCellElement[]} */
+  const headerCells = [];
   const badgeClass = {
     PK: "rounded bg-amber-100 px-1 py-0.5 font-mono text-[10px] text-amber-900",
     FK: "rounded bg-sky-100 px-1 py-0.5 font-mono text-[10px] text-sky-900",
@@ -2768,11 +2929,12 @@ function renderTablePreviewTable(bodyEl, metaEl, data, previewTabId) {
     FK: "Foreign key column",
     UK: "Unique constraint column",
   };
-  for (const col of data.columns) {
+  for (let ci = 0; ci < data.columns.length; ci++) {
+    const col = data.columns[ci];
     const th = document.createElement("th");
     th.scope = "col";
     th.className =
-      "sticky top-0 border-b border-stone-200/90 bg-[#fffcf7] px-2 py-2 align-top font-medium text-stone-700";
+      "min-w-0 break-words sticky top-0 border-b border-stone-200/90 bg-[#fffcf7] px-2 py-2 align-top font-medium text-stone-700";
     const nameSpan = document.createElement("span");
     nameSpan.textContent = col;
     th.appendChild(nameSpan);
@@ -2789,6 +2951,7 @@ function renderTablePreviewTable(bodyEl, metaEl, data, previewTabId) {
       }
       th.appendChild(badgeRow);
     }
+    headerCells.push(th);
     trh.appendChild(th);
   }
   thead.appendChild(trh);
@@ -2804,8 +2967,7 @@ function renderTablePreviewTable(bodyEl, metaEl, data, previewTabId) {
         : {};
     for (const col of data.columns) {
       const td = document.createElement("td");
-      td.className =
-        "max-w-[24rem] whitespace-pre-wrap break-words px-2 py-1.5 align-top";
+      td.className = RESIZABLE_TABLE_CELL_CLASS;
       const cell = formatTableCellPreview(rowObj[col]);
       if (cell.type === "null") {
         const span = document.createElement("span");
@@ -2820,6 +2982,7 @@ function renderTablePreviewTable(bodyEl, metaEl, data, previewTabId) {
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
+  installResizableTableColumns(table, colElements, headerCells);
   tableScroll.appendChild(table);
 
   bodyEl.appendChild(tabBar);
